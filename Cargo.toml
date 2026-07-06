@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/market-data",
+    "crates/vol",
+    "crates/signals",
+    "crates/exub-cli",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+authors = ["k-henry <khe4r6@gmail.com>"]
+repository = "exuberance"
+
+# Keep the core crates dependency-free so `cargo test` runs offline and fast.
+# Heavier deps (reqwest/tokio/serde/clap) get added per-crate when we wire live
+# HTTP (Polygon) and broker execution — see CLAUDE.md "Build order".
+[workspace.dependencies]

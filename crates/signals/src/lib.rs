@@ -1,0 +1,218 @@
+//! Screeners for `exuberance`.
+//!
+//! A screen turns raw market data into a pass/fail verdict plus the numbers that
+//! justify it. The flagship is [`CheapVolScreen`]: find names where implied vol
+//! is cheap **for that name** and below what the stock has actually been doing,
+//! filtered to underlyings with a proven history of large moves.
+
+use market_data::{closes, DataError, DataSource};
+
+/// Entry criteria for the cheap-vol / proven-mover setup.
+///
+/// Defaults encode the strategy discussed: IV in the bottom fifth of its own
+/// range, realized vol at least matching implied, and at least a couple of
+/// ≥10% single-day moves over the lookback window.
+#[derive(Debug, Clone, Copy)]
+pub struct CheapVolCriteria {
+    /// Max IV rank to qualify (0.0–1.0). Lower = cheaper vs. the name's own history.
+    pub max_iv_rank: f64,
+    /// Minimum realized/implied ratio. `1.0` means realized must at least match implied.
+    pub min_realized_over_implied: f64,
+    /// A move counts as "big" if its absolute daily return meets this (decimal).
+    pub big_move_threshold: f64,
+    /// Require at least this many big moves in the lookback window.
+    pub min_big_moves: usize,
+    /// How many daily bars to pull for realized-vol and move detection.
+    pub lookback_days: usize,
+}
+
+impl Default for CheapVolCriteria {
+    fn default() -> Self {
+        Self {
+            max_iv_rank: 0.20,
+            min_realized_over_implied: 1.0,
+            big_move_threshold: 0.10,
+            min_big_moves: 2,
+            lookback_days: 756, // ~3 years of trading days
+        }
+    }
+}
+
+/// The computed evidence for one symbol against [`CheapVolCriteria`].
+#[derive(Debug, Clone)]
+pub struct CheapVolResult {
+    pub symbol: String,
+    pub iv: f64,
+    pub iv_rank: Option<f64>,
+    pub realized_vol: f64,
+    /// realized / implied. `> 1.0` means the stock moved more than options imply.
+    pub realized_over_implied: Option<f64>,
+    /// implied − realized. Negative == options underpricing movement.
+    pub implied_realized_spread: f64,
+    pub big_moves: usize,
+    pub max_move: f64,
+    pub passed: bool,
+    /// Human-readable reasons a symbol failed (empty when it passed).
+    pub fail_reasons: Vec<String>,
+}
+
+/// Evaluate a single symbol. Returns the full evidence, whether it passed or not.
+pub fn evaluate<S: DataSource>(
+    source: &S,
+    symbol: &str,
+    c: &CheapVolCriteria,
+) -> Result<CheapVolResult, DataError> {
+    let bars = source.daily_bars(symbol, c.lookback_days)?;
+    let snap = source.iv_snapshot(symbol)?;
+    let prices = closes(&bars);
+
+    let realized = vol::realized_vol_daily(&prices).unwrap_or(0.0);
+    let rank = vol::iv_rank(snap.iv, &snap.iv_history);
+    let roi = vol::realized_over_implied(realized, snap.iv);
+    let spread = vol::implied_realized_spread(snap.iv, realized);
+    let big_moves = vol::count_moves_over(&prices, c.big_move_threshold);
+    let max_move = vol::max_abs_move(&prices).unwrap_or(0.0);
+
+    let mut fail_reasons = Vec::new();
+    match rank {
+        Some(r) if r <= c.max_iv_rank => {}
+        Some(r) => fail_reasons.push(format!("IV rank {r:.2} > max {:.2}", c.max_iv_rank)),
+        None => fail_reasons.push("no IV history to rank".into()),
+    }
+    match roi {
+        Some(r) if r >= c.min_realized_over_implied => {}
+        Some(r) => fail_reasons.push(format!(
+            "realized/implied {r:.2} < min {:.2}",
+            c.min_realized_over_implied
+        )),
+        None => fail_reasons.push("implied vol non-positive".into()),
+    }
+    if big_moves < c.min_big_moves {
+        fail_reasons.push(format!(
+            "{big_moves} big moves (≥{:.0}%) < min {}",
+            c.big_move_threshold * 100.0,
+            c.min_big_moves
+        ));
+    }
+
+    Ok(CheapVolResult {
+        symbol: symbol.to_string(),
+        iv: snap.iv,
+        iv_rank: rank,
+        realized_vol: realized,
+        realized_over_implied: roi,
+        implied_realized_spread: spread,
+        big_moves,
+        max_move,
+        passed: fail_reasons.is_empty(),
+        fail_reasons,
+    })
+}
+
+/// Run the screen over a universe, returning **only the names that passed**,
+/// sorted most-underpriced first (most negative implied−realized spread).
+///
+/// Symbols the data source can't serve are skipped (not fatal to the scan).
+pub fn scan<S: DataSource>(
+    source: &S,
+    universe: &[&str],
+    c: &CheapVolCriteria,
+) -> Vec<CheapVolResult> {
+    let mut hits: Vec<CheapVolResult> = universe
+        .iter()
+        .filter_map(|sym| evaluate(source, sym, c).ok())
+        .filter(|r| r.passed)
+        .collect();
+    hits.sort_by(|a, b| {
+        a.implied_realized_spread
+            .partial_cmp(&b.implied_realized_spread)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    hits
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use market_data::MockSource;
+
+    /// Build a price series with `n` gentle steps then a few explicit big moves,
+    /// so realized vol is high and the move filter trips.
+    fn mover_series() -> Vec<f64> {
+        let mut p = vec![100.0];
+        // three ±12% moves — proven mover, drives realized vol up
+        for &m in &[1.12, 0.88, 1.12, 0.90, 1.11] {
+            let last = *p.last().unwrap();
+            p.push(last * m);
+        }
+        p
+    }
+
+    #[test]
+    fn cheap_vol_name_passes() {
+        let mut src = MockSource::new();
+        // IV of 20%, sitting near the bottom of a 15–60% history → low rank.
+        src.insert_from_closes(
+            "MOVER",
+            &mover_series(),
+            0.20,
+            vec![0.15, 0.30, 0.45, 0.60],
+        );
+        let c = CheapVolCriteria {
+            lookback_days: 100,
+            ..Default::default()
+        };
+        let r = evaluate(&src, "MOVER", &c).unwrap();
+        assert!(r.passed, "expected pass, reasons: {:?}", r.fail_reasons);
+        assert!(r.iv_rank.unwrap() <= 0.20);
+        assert!(r.realized_over_implied.unwrap() > 1.0);
+        assert!(r.big_moves >= 2);
+    }
+
+    #[test]
+    fn expensive_iv_fails_on_rank() {
+        let mut src = MockSource::new();
+        // Same mover, but IV is pinned at the TOP of its history → high rank.
+        src.insert_from_closes("MOVER", &mover_series(), 0.60, vec![0.15, 0.30, 0.60]);
+        let c = CheapVolCriteria {
+            lookback_days: 100,
+            ..Default::default()
+        };
+        let r = evaluate(&src, "MOVER", &c).unwrap();
+        assert!(!r.passed);
+        assert!(r.fail_reasons.iter().any(|s| s.contains("IV rank")));
+    }
+
+    #[test]
+    fn sleepy_stock_fails_on_moves() {
+        let mut src = MockSource::new();
+        // Cheap IV rank, but the stock barely moves → fails the proven-mover gate.
+        src.insert_from_closes(
+            "SLEEPY",
+            &[100.0, 100.5, 100.2, 100.7, 100.3],
+            0.10,
+            vec![0.10, 0.40, 0.80],
+        );
+        let c = CheapVolCriteria {
+            lookback_days: 100,
+            ..Default::default()
+        };
+        let r = evaluate(&src, "SLEEPY", &c).unwrap();
+        assert!(!r.passed);
+        assert!(r.fail_reasons.iter().any(|s| s.contains("big moves")));
+    }
+
+    #[test]
+    fn scan_returns_only_passers_sorted() {
+        let mut src = MockSource::new();
+        src.insert_from_closes("MOVER", &mover_series(), 0.20, vec![0.15, 0.60]);
+        src.insert_from_closes("SLEEPY", &[100.0, 100.5, 100.2], 0.10, vec![0.10, 0.80]);
+        let c = CheapVolCriteria {
+            lookback_days: 100,
+            ..Default::default()
+        };
+        let hits = scan(&src, &["MOVER", "SLEEPY", "MISSING"], &c);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].symbol, "MOVER");
+    }
+}

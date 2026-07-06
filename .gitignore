@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+.env
+.env.local
+*.log
+# local scratch data pulls
+/data/*.json
+/data/*.csv
+!/data/.gitkeep

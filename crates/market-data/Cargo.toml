@@ -1,0 +1,12 @@
+[package]
+name = "market-data"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Market data types and the DataSource trait (Polygon REST + mocks)."
+
+[dependencies]
+# Dependency-free for now. When we wire live Polygon HTTP we'll add:
+#   reqwest = { version = "0.12", features = ["json", "blocking"] }
+#   serde   = { version = "1", features = ["derive"] }
+# behind a `polygon-live` feature so the pure types stay offline-testable.

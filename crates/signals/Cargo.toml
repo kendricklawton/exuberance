@@ -1,0 +1,10 @@
+[package]
+name = "signals"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Screeners built on market-data + vol. The cheap-vol / proven-mover screen."
+
+[dependencies]
+market-data = { path = "../market-data" }
+vol = { path = "../vol" }
