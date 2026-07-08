@@ -75,12 +75,14 @@ pub struct Completion {
     pub model: String,
 }
 
-/// Anything that can turn a [`Prompt`] into a [`Completion`] — the reasoning
-/// backend behind the trading brain, swappable and capability-probed. A raw model
-/// (Claude, Gemini, OpenAI) and a coding/agentic assistant (Claude Code, Gemini
-/// CLI, Codex) both implement this one seam; a coding agent advertises
-/// [`Capability::CodingAgent`] and reports [`ProviderKind::Agent`] so a caller can
-/// tell it runs an agentic loop rather than returning a single completion.
+/// Anything that can turn a [`Prompt`] into a [`Completion`] — a **dormant contract**:
+/// the engine never calls a model (agents connect over MCP and bring their own — ROADMAP
+/// Phases 15–16 tombstone), so only the [`EchoAi`] mock implements this. The shape is kept
+/// so that *if* in-engine model calls are ever explicitly re-scoped, a raw model (Claude,
+/// Gemini, OpenAI) and a coding agent (Claude Code, Gemini CLI, Codex) would share this
+/// one seam; a coding agent advertises [`Capability::CodingAgent`] and reports
+/// [`ProviderKind::Agent`] so a caller can tell it runs an agentic loop rather than
+/// returning a single completion.
 ///
 /// `complete` is `async` because a real backend is a network round-trip (or a
 /// spawned agent session); `#[async_trait]` keeps the trait object-safe for a

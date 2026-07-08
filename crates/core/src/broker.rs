@@ -1,10 +1,12 @@
 //! The [`BrokerProvider`] contract + a paper mock.
 //!
-//! One trait for every execution venue (Tradier, Alpaca, IBKR, …). The types are
-//! deliberately minimal — enough to size, place, and inspect an order — and the
-//! guardrail from CLAUDE.md is baked into the contract: a broker reports its
-//! [`TradingMode`], and going live is never inferred. The [`PaperBroker`] mock
-//! demonstrates the shape and enforces the guardrail.
+//! A **designed-but-dormant seam** (see the ROADMAP Phases 19–22 tombstone): the engine
+//! contains **no execution path** — no phase wires a real venue to this trait, and no
+//! order code to any real broker exists. "Never acts" is guaranteed by that absence
+//! (.rules guardrail #1). The contract is kept minimal — enough to size, place, and
+//! inspect an order, with a broker reporting its [`TradingMode`] — so that *if* execution
+//! is ever explicitly re-scoped, the venue-neutral shape already exists. Only the inert
+//! [`PaperBroker`] reference mock implements it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -73,8 +75,9 @@ pub struct Account {
     pub buying_power: f64,
 }
 
-/// Anything that can hold an account and place orders. The risk layer sits in
-/// front of this; the trait itself only promises a venue-neutral surface.
+/// Anything that can hold an account and place orders — a **dormant contract**: no phase
+/// wires a real venue to it (ROADMAP Phases 19–22 tombstone), and reviving execution is an
+/// explicit re-scope, never drift. The trait promises only a venue-neutral surface.
 ///
 /// The I/O methods are `async` (a real broker is a network round-trip);
 /// `#[async_trait]` keeps the trait object-safe for a runtime-selected
@@ -92,11 +95,12 @@ pub trait BrokerProvider: Provider {
     async fn place_order(&self, req: &OrderRequest) -> ProviderResult<OrderReceipt>;
 }
 
-/// A no-network paper broker for tests, demos, and the default trading mode.
+/// A no-network paper broker — the seam's inert reference mock.
 ///
-/// It accepts any well-formed order and simulates a fill. It refuses to be
-/// constructed in live mode without the explicit `allow_live` acknowledgement,
-/// mirroring the "no live orders without a human go" guardrail.
+/// It accepts any well-formed order and simulates a fill. It is **paper-only by
+/// construction**: [`mode`](BrokerProvider::mode) is hard-coded to [`TradingMode::Paper`]
+/// and no live construction path exists at all — that absence *is* the guardrail
+/// (.rules #1), pinned by the `paper_broker_fills_and_stays_paper` test.
 #[derive(Debug)]
 pub struct PaperBroker {
     id: String,

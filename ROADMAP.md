@@ -152,7 +152,7 @@ vendor-specific anywhere.
 - [x] **P3.2** A unified `ProviderError` (NotFound / Auth / RateLimited / Transport /
       Unsupported / Refused / NotImplemented): every failed provider call is a typed value
       that degrades to a clear message.
-- [ ] **P3.3** The three I/O seams — `MarketDataProvider` (daily bars + IV snapshot; the
+- [x] **P3.3** The three I/O seams — `MarketDataProvider` (daily bars + IV snapshot; the
       one *active* port), plus `BrokerProvider` and `AiProvider` verified as
       **designed-but-dormant contracts**: no phase wires real vendors to them (see the
       Phase 15–16 and 19–22 tombstones). The other agnostic seam, `Strategy`, is internal
