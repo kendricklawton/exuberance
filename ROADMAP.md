@@ -145,7 +145,7 @@ Goal: the contracts every adapter implements — the base provider/capability mo
 vocabulary, and the three I/O seams — with reference impls proving them. Nothing
 vendor-specific anywhere.
 
-- [ ] **P3.1** `exub-core`: the object-safe `Provider` base trait + `ProviderInfo` identity
+- [x] **P3.1** `exub-core`: the object-safe `Provider` base trait + `ProviderInfo` identity
       card + `ProviderKind` (MarketData / Broker / Ai / Agent) + the `Capability` vocabulary
       with `supports()` probing — screeners and the orchestrator branch on capability, never
       on a vendor name.

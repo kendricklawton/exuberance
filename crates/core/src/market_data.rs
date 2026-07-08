@@ -106,6 +106,7 @@ pub enum IvHistoryStrategy {
 /// when it advertises [`Capability::OptionsHistory`], otherwise
 /// [`Accumulate`](IvHistoryStrategy::Accumulate). Generic over `?Sized` so it accepts a boxed `&dyn`
 /// provider from the registry.
+#[must_use]
 pub fn iv_history_strategy<P: Provider + ?Sized>(provider: &P) -> IvHistoryStrategy {
     if provider.supports(Capability::OptionsHistory) {
         IvHistoryStrategy::Backfill

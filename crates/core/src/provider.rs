@@ -6,7 +6,12 @@
 //! screeners and the orchestrator branch on [`Capability`], never on a vendor name.
 
 /// Which family a provider belongs to.
+///
+/// `#[non_exhaustive]` (like [`Capability`] and the canonical types): new families can be
+/// added without breaking downstream `match`es — the same additive-evolution policy as the
+/// rest of the schema (Phase 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ProviderKind {
     /// Prices, bars, quotes, IV snapshots, chains (Massive, Alpha Vantage, …).
     MarketData,
@@ -26,7 +31,11 @@ pub enum ProviderKind {
 /// capabilities in [`ProviderInfo`]; callers check before relying on one, so a
 /// data feed without options data degrades gracefully instead of erroring deep
 /// in a screen.
+///
+/// `#[non_exhaustive]`: this vocabulary is guaranteed to grow (e.g. the events/catalysts
+/// capability, ROADMAP P9.4), and growing it must never break a downstream `match`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Capability {
     // Market data
     DailyBars,
@@ -64,11 +73,18 @@ pub struct ProviderInfo {
 
 /// The root trait every provider implements. Object-safe on purpose so a
 /// registry can hold `Box<dyn Provider>` of mixed vendors.
-pub trait Provider {
+///
+/// `Send + Sync` is a supertrait bound because providers are runtime-selected boxes that
+/// cross async tasks: the `Engine` (Phase 11) and the MCP server (Phase 17) share and spawn
+/// with them, so the property is pinned here rather than discovered at the first
+/// `tokio::spawn`. Every reference impl (mock/paper/echo) already satisfies it.
+pub trait Provider: Send + Sync {
     /// Identity and capability card for this instance.
     fn info(&self) -> ProviderInfo;
 
     /// Whether this provider advertises `cap`. Default checks [`ProviderInfo`].
+    /// `#[must_use]`: ignoring a capability probe defeats its purpose — branch on it.
+    #[must_use]
     fn supports(&self, cap: Capability) -> bool {
         self.info().capabilities.contains(&cap)
     }
