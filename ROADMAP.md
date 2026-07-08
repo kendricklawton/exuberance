@@ -172,7 +172,7 @@ the gate instead of relitigating discipline by hand.
       pure `resolve()` fold and precedence pinned by unit tests; adapter selection + trading
       mode are config, not code; **secrets never enter the config** — provider-native env
       vars only (`MASSIVE_API_KEY`, `ALPHA_VANTAGE_API_KEY`, …), read at the adapter edge.
-- [ ] **P4.2** `tracing` logs to **stderr**, filtered by config; stdout reserved for data,
+- [x] **P4.2** `tracing` logs to **stderr**, filtered by config; stdout reserved for data,
       so `exub scan 2>/dev/null` stays pipe-clean.
 - [ ] **P4.3** `cargo xtask ci` — the local gate: fmt · clippy `-D warnings` · build · test ·
       docs (`RUSTDOCFLAGS=-D warnings`) · feature powerset (`cargo-hack`) · `cargo-deny`,
