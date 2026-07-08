@@ -168,10 +168,10 @@ vendor-specific anywhere.
 Goal: the 12-factor + rigor substrate, before any real I/O — so every later phase inherits
 the gate instead of relitigating discipline by hand.
 
-- [ ] **P4.1** Layered `Config` (**flags > env (`EXUB_*`) > file (TOML) > defaults**) with a
+- [x] **P4.1** Layered `Config` (**flags > env (`EXUB_*`) > file (TOML) > defaults**) with a
       pure `resolve()` fold and precedence pinned by unit tests; adapter selection + trading
       mode are config, not code; **secrets never enter the config** — provider-native env
-      vars only (`MASSIVE_API_KEY`, `ANTHROPIC_API_KEY`, …), read at the adapter edge.
+      vars only (`MASSIVE_API_KEY`, `ALPHA_VANTAGE_API_KEY`, …), read at the adapter edge.
 - [ ] **P4.2** `tracing` logs to **stderr**, filtered by config; stdout reserved for data,
       so `exub scan 2>/dev/null` stays pipe-clean.
 - [ ] **P4.3** `cargo xtask ci` — the local gate: fmt · clippy `-D warnings` · build · test ·
