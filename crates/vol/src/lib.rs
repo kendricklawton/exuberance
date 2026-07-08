@@ -13,6 +13,8 @@ pub const TRADING_DAYS_PER_YEAR: f64 = 252.0;
 /// Natural-log returns from a price series: `ln(p[i] / p[i-1])`.
 ///
 /// Returns a vector of length `prices.len() - 1` (empty if fewer than 2 prices).
+/// Prices are assumed positive: validating bad ticks (zero/negative prices) is the
+/// data-adapter's job (ROADMAP P7.2), not this pure-math layer's.
 pub fn log_returns(prices: &[f64]) -> Vec<f64> {
     if prices.len() < 2 {
         return Vec::new();
@@ -135,6 +137,29 @@ mod tests {
     }
 
     #[test]
+    fn simple_returns_basic() {
+        // 100 → 110 is exactly +10%; 110 → 99 is exactly −10% (99/110 == 0.9).
+        let r = simple_returns(&[100.0, 110.0, 99.0]);
+        assert_eq!(r.len(), 2);
+        assert!(approx(r[0], 0.10, 1e-12));
+        assert!(approx(r[1], -0.10, 1e-12));
+        assert!(simple_returns(&[100.0]).is_empty());
+        assert!(simple_returns(&[]).is_empty());
+    }
+
+    #[test]
+    fn sample_std_dev_known_answer() {
+        // Classic hand-computed set: mean 5, squared deviations sum 32,
+        // sample variance 32/7 → sd = sqrt(32/7).
+        let xs = [2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0];
+        let sd = sample_std_dev(&xs).unwrap();
+        assert!(approx(sd, (32.0_f64 / 7.0).sqrt(), 1e-12));
+        // Fewer than 2 samples has no spread to measure.
+        assert!(sample_std_dev(&[1.0]).is_none());
+        assert!(sample_std_dev(&[]).is_none());
+    }
+
+    #[test]
     fn realized_vol_is_positive_and_scales() {
         // A gently oscillating series has non-zero, finite realized vol.
         let prices = [100.0, 101.0, 100.0, 102.0, 101.0, 103.0];
@@ -143,6 +168,16 @@ mod tests {
         // A flat series has zero realized vol.
         let flat = [100.0, 100.0, 100.0, 100.0];
         assert!(approx(realized_vol_daily(&flat).unwrap(), 0.0, 1e-12));
+    }
+
+    #[test]
+    fn realized_vol_known_answer() {
+        // 100 → 110 → 100: log returns are exactly [ln 1.1, −ln 1.1] (ln(10/11) == −ln 1.1),
+        // so mean = 0, sample variance = 2·r²/1, sd = r·√2, and annualized
+        // rv = r·√2·√252 = r·√504 — derived by hand, independent of the implementation.
+        let expected = (1.1_f64).ln() * (504.0_f64).sqrt();
+        let rv = realized_vol_daily(&[100.0, 110.0, 100.0]).unwrap();
+        assert!(approx(rv, expected, 1e-9), "rv {rv} != expected {expected}");
     }
 
     #[test]
@@ -167,9 +202,15 @@ mod tests {
     #[test]
     fn spread_and_ratio_flag_cheap_vol() {
         // implied 20%, realized 35% → implied underprices movement.
-        assert!(implied_realized_spread(0.20, 0.35) < 0.0);
-        assert!(realized_over_implied(0.35, 0.20).unwrap() > 1.0);
+        // Exact values: spread = 0.20 − 0.35 = −0.15; ratio = 0.35 / 0.20 = 1.75.
+        assert!(approx(implied_realized_spread(0.20, 0.35), -0.15, 1e-12));
+        assert!(approx(
+            realized_over_implied(0.35, 0.20).unwrap(),
+            1.75,
+            1e-12
+        ));
         assert!(realized_over_implied(0.35, 0.0).is_none());
+        assert!(realized_over_implied(0.35, -0.1).is_none());
     }
 
     #[test]

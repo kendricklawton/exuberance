@@ -114,7 +114,7 @@ Goal: the flagship strategy's math and screen, provable offline — pure vol pri
 cheap-vol / proven-mover screen, and a CLI demo so the whole pipeline is visible end-to-end
 before any live data exists.
 
-- [ ] **P1.1** Pure vol math in `vol`: log/simple returns, sample std-dev, annualized
+- [x] **P1.1** Pure vol math in `vol`: log/simple returns, sample std-dev, annualized
       realized vol, IV rank + IV percentile, implied−realized spread, realized/implied
       ratio, max-move + big-move counting. Deterministic, dependency-free, offline-testable;
       a known-answer test for every function.
