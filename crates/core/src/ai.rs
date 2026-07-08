@@ -1,9 +1,10 @@
 //! The [`AiProvider`] contract + an echo mock.
 //!
-//! The AI layer today is Claude Code, but the engine shouldn't hard-wire one
-//! vendor. This trait is the seam: a completion in, a completion out, plus a
-//! capability card so callers know whether tool-use or streaming is on offer.
-//! Concrete providers (Anthropic, and whatever else) live in their own crate.
+//! One seam for every reasoning backend — raw models (Claude, Gemini, OpenAI)
+//! and their coding agents — so the engine never hard-wires one vendor. The
+//! trait is minimal: a completion in, a completion out, plus a capability card
+//! so callers know whether tool-use or streaming is on offer. Concrete
+//! providers land in their own crate (ROADMAP Phase 16).
 
 use async_trait::async_trait;
 

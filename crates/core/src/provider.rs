@@ -1,6 +1,6 @@
 //! The base [`Provider`] contract and capability model.
 //!
-//! Every plugged-in vendor — Polygon, Tradier, Alpaca, Anthropic, a local mock —
+//! Every plugged-in vendor — Massive, Tradier, Alpaca, Anthropic, a local mock —
 //! implements [`Provider`] so the engine can identify it and ask *what it can do*
 //! before it asks it to do anything. Capability probing is how we stay agnostic:
 //! screeners and the orchestrator branch on [`Capability`], never on a vendor name.
@@ -8,7 +8,7 @@
 /// Which family a provider belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ProviderKind {
-    /// Prices, bars, quotes, IV snapshots, chains (Massive/Polygon, Alpha Vantage, …).
+    /// Prices, bars, quotes, IV snapshots, chains (Massive, Alpha Vantage, …).
     MarketData,
     /// Accounts, positions, order placement/execution (Tradier, Alpaca, …).
     Broker,
@@ -54,7 +54,7 @@ pub enum Capability {
 /// Identity + capability card for a provider instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderInfo {
-    /// Stable machine id, e.g. `"polygon"`, `"tradier-paper"`, `"anthropic"`.
+    /// Stable machine id, e.g. `"massive"`, `"tradier-paper"`, `"anthropic"`.
     pub id: String,
     /// Which family this provider serves.
     pub kind: ProviderKind,

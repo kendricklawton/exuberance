@@ -8,7 +8,7 @@ yanked = "deny"
 
 [licenses]
 version = 2
-# Permissive licenses only — matches the project's MIT license and keeps redistribution clean. Add to this
+# Permissive licenses only — matches the project's Apache-2.0 license and keeps redistribution clean. Add to this
 # list deliberately (with a reason) when a new dependency needs it.
 allow = [
     "MIT",

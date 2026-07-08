@@ -1,9 +1,16 @@
 # exuberance
 
-A trading + AI cockpit for a discretionary options/volatility trader. A Rust
-engine with a **pluggable AI layer** — model + coding-agent adapters behind one
-trait, and an MCP surface — not a set of tool-specific personas. This file is the
-operating manual — read it every session.
+A trading + AI cockpit for discretionary traders — **any market, any strategy.**
+A Rust engine whose **data feeds, strategies, AI models, and brokers all plug in
+behind traits**, with an MCP surface — not tied to one asset class, one strategy,
+or one AI harness. This file is the operating manual — read it every session.
+
+**Scope: all traders, not just options/vol.** The engine is strategy- and
+asset-class-agnostic (equities, options, futures, crypto, FX). The cheap-vol /
+proven-mover setup below is the **flagship *reference* strategy** — the first
+worked example that proves the seam — not the definition of the product. New
+strategies plug in behind a `Strategy` trait the same way a data feed or broker
+does.
 
 **What it is, in one line: a grounded trade-*discovery* engine. It helps you
 *find* trades — it never recommends them and never acts.** The engine surfaces
@@ -13,18 +20,28 @@ and not autonomous execution. See `ROADMAP.md` for the architecture and plan.
 
 **Why this engine exists (vs. Massive's MCP).** Massive already ships an MCP
 server that hands an agent raw data, so raw *access* is not the reason to exist —
-the value is what we compute on top and cite. Three load-bearing differentiators:
-(1) the **edge is a deterministic computation** (IV rank, realized/implied,
-move-counting) that an LLM can't be trusted to eyeball — the engine authors the
-number and cites its inputs, the model never does; (2) **IV rank requires
-accumulated 1–3yr IV history** that no snapshot call returns — the engine's job is
-to persist that state, so the core signal is only computable *because* the engine
-exists; (3) the engine then becomes a **higher-order MCP** exposing *grounded,
-cited signals* (not raw data) to Claude Code / Gemini CLI / Codex. If a change
-makes the engine a thin passthrough to a vendor's data, it has lost its reason to
-exist — push the value into computation, state, and citation.
+the value is what we compute on top and cite. Three load-bearing differentiators
+(shown with the flagship vol strategy, but each holds for *any* strategy):
+(1) the **edge is a deterministic computation** — for cheap-vol that's IV rank /
+realized-vs-implied / move-counting; for momentum or mean-reversion it's their own
+signals — that an LLM can't be trusted to eyeball; the engine authors the number
+and cites its inputs, the model never does; (2) **a strategy needs accumulated
+state no snapshot call returns** — cheap-vol needs a 1–3yr IV *series* to rank
+against; every strategy has state like this the engine must persist, so the signal
+is only computable *because* the engine exists; (3) the engine then becomes a
+**higher-order MCP** exposing *grounded, cited signals* (not raw data) to Claude
+Code / Gemini CLI / Codex. If a change makes the engine a thin passthrough to a
+vendor's data, it has lost its reason to exist — push the value into computation,
+state, and citation.
 
-## What we're trading
+## Strategies — the flagship: cheap vol on proven movers
+
+Strategies are **pluggable** (a `Strategy`/screen trait, like the data and broker
+seams), so the engine serves any trader across any asset class. The **flagship
+reference strategy** — the one that ships first and proves the seam — is *cheap
+volatility on proven movers*. Everything below describes that strategy; other
+strategies (momentum, mean-reversion, breakout, pairs, …) plug in the same way and
+carry their own justifying metrics.
 
 **The edge: cheap volatility on proven movers.** We hunt options where implied
 volatility is underpricing future movement — a positive *variance risk premium*
@@ -56,18 +73,20 @@ a crate that implements a trait — not editing the engine. Full plan in `ROADMA
 ```
 crates/
   core/         `exub-core` — provider-agnostic contracts. Provider/Capability, ProviderError, and the
-                MarketDataProvider/BrokerProvider/AiProvider traits + mock/paper/echo reference impls. No deps.
-  vol/          Pure vol math — realized vol, IV rank/percentile, spread, moves. Fully tested, no deps.
-  market-data/  Market-data providers implementing core's trait; MockSource (tests) + PolygonSource (stub).
-  signals/      Screeners over any MarketDataProvider. CheapVolScreen is the flagship.
+                MarketDataProvider/BrokerProvider/AiProvider traits + mock/paper/echo reference impls. Only
+                dep: async-trait (for the async seams).
+  vol/          Vol math for the flagship strategy — realized vol, IV rank/percentile, spread, moves. No deps.
+  market-data/  Market-data providers implementing core's trait; MockSource (tests) + MassiveSource (stub).
+  signals/      Pluggable strategies/screens over any MarketDataProvider. Cheap-vol is the flagship reference
+                strategy; more strategies (and other asset classes) plug in behind the same seam.
   cli/          `exub` binary. `exub scan` runs the screen; `exub providers` lists wired providers.
 xtask/        Dev orchestration — `cargo xtask ci` runs the full local gate. Never shipped.
 ```
 
 ## Data sources
 
-- **Polygon.io** — the Rust engine's live data path (`PolygonSource`, reads
-  `POLYGON_API_KEY`). REST aggregates for bars; options snapshot for IV. Not
+- **Massive** — the Rust engine's live data path (`MassiveSource`, reads
+  `MASSIVE_API_KEY`). REST aggregates for bars; options snapshot for IV. Not
   wired yet — it's the next milestone.
 - **`massive` MCP tools** — live market data available in the Claude Code dev
   environment (quotes, chains, IVs, historicals). Use `search_endpoints` then
@@ -108,9 +127,9 @@ This repo will eventually reach broker execution. Until then and after:
    engine (ROADMAP Phase 21) has veto.
 4. **Finds, never recommends — decision *support*, not advice.** This is the
    load-bearing principle, not a footnote. The engine *finds* trades:
-   it surfaces candidates and the evidence that justifies them (IV rank,
-   realized/implied, move history, catalysts), each grounded in fetched data and
-   cited. The engine — not an LLM — authors every figure, so a number can't be
+   it surfaces candidates and the evidence that justifies them (whatever metrics
+   the strategy uses — for cheap-vol that's IV rank, realized/implied, move
+   history, catalysts), each grounded in fetched data and cited. The engine — not an LLM — authors every figure, so a number can't be
    hallucinated. Nothing here ever emits a "buy/sell" verdict, a recommendation,
    or an autonomous action; the human weighs the evidence, decides, places the
    trade, and owns the risk. If output starts to read as a recommendation rather
@@ -129,8 +148,8 @@ This repo will eventually reach broker execution. Until then and after:
 
 ## Build order (roadmap)
 
-The phase-by-phase plan **with live status** is the single source of truth in
-**`ROADMAP.md`** (26 phases across six tracks). Don't duplicate phase status here —
-update the roadmap. In brief: the foundations, provider contracts, config/CI, async
-seams + registry, and schema/error hardening are in; live data feeds, the IV-history
-store, the in-engine AI layer + MCP surface, and guarded paper execution are ahead.
+The phase-by-phase plan is the single source of truth in **`ROADMAP.md`** (26
+sequentially-gated phases; its **checkboxes are the state**). Work it per its §0.5
+agent loop: first unchecked box in ID order, verify-before-building, gate green,
+check the box in the same commit (`P8.2: …`), and never start a phase before the
+prior one's Exit gate passes. Don't duplicate phase status here — update the roadmap.

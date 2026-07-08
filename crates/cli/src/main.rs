@@ -21,7 +21,7 @@ use signals::{scan, CheapVolCriteria};
 #[command(
     name = "exub",
     version,
-    about = "Find cheap-vol option trades — grounded, cited, never advised"
+    about = "Find trades, any market, any strategy — grounded, cited, never advised"
 )]
 struct Cli {
     #[command(subcommand)]

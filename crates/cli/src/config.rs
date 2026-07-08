@@ -2,7 +2,7 @@
 //!
 //! Which market-data and AI adapter runs — and whether execution is paper or live — is *config, not code*:
 //! a new adapter is reachable by name without touching a call site. **Secrets never live here.** API keys
-//! come from provider-native env vars (`POLYGON_API_KEY`, `ANTHROPIC_API_KEY`, …) read at the adapter edge,
+//! come from provider-native env vars (`MASSIVE_API_KEY`, `ANTHROPIC_API_KEY`, …) read at the adapter edge,
 //! never from this struct or the config file — so a config dump can't leak a key.
 //!
 //! IO and logic are separated: [`resolve`] is a pure fold over the layers (unit-tested for precedence),
@@ -16,7 +16,7 @@ use serde::Deserialize;
 /// The resolved configuration the CLI runs with.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// Which market-data adapter to use (e.g. `"mock"`, later `"polygon"`).
+    /// Which market-data adapter to use (e.g. `"mock"`, later `"massive"`).
     pub data_provider: String,
     /// Which AI adapter to use (e.g. `"mock"`, later `"claude"`).
     pub ai_provider: String,
@@ -176,16 +176,16 @@ mod tests {
 
     #[test]
     fn toml_file_parses_into_a_partial() {
-        let p: Partial = toml::from_str("data_provider = \"polygon\"\ntrading_mode = \"paper\"\n")
+        let p: Partial = toml::from_str("data_provider = \"massive\"\ntrading_mode = \"paper\"\n")
             .expect("valid toml");
-        assert_eq!(p.data_provider.as_deref(), Some("polygon"));
+        assert_eq!(p.data_provider.as_deref(), Some("massive"));
         assert_eq!(p.ai_provider, None);
         assert_eq!(p.trading_mode.as_deref(), Some("paper"));
     }
 
     #[test]
     fn unknown_toml_key_is_rejected() {
-        assert!(toml::from_str::<Partial>("provdier = \"polygon\"\n").is_err());
+        assert!(toml::from_str::<Partial>("provdier = \"massive\"\n").is_err());
     }
 
     #[test]

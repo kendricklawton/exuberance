@@ -1,360 +1,544 @@
-# Roadmap — exuberance: a grounded trade-*discovery* engine (Rust)
+# Roadmap
 
-**exuberance helps a discretionary options/vol trader *find* trades. It finds and
-cites; it never recommends and never acts.** You ask where volatility is cheap on
-a proven mover, and the engine surfaces candidates plus the evidence — grounded in
-real data, with its provenance — so *you* decide. This is decision **support**, not
-advice, and not autonomous execution.
+## §0 The spine
 
-The engine is **provider-agnostic**: it plugs any market-data feed, any AI model,
-and (for human-initiated execution only) any broker in behind three small traits,
-so trading logic never names a vendor. This is the staged plan; the *why* is in
-[`ARCHITECTURE.md`](./ARCHITECTURE.md) (to be written), the operating manual in
-[`CLAUDE.md`](./CLAUDE.md).
+**`exuberance` is a grounded trade-*discovery* engine (Rust).** It helps a discretionary
+trader *find* trades — across **any market and any strategy**. You ask (say) where implied
+volatility is cheap on a name with a proven ability to move — or wherever your strategy sees
+an edge — and the engine surfaces candidates plus the evidence that justifies them, grounded
+in real data with its provenance, so *you* decide. Decision **support**, never advice, never
+autonomous execution.
 
-> **Legend:** ✅ done · 🚧 in progress · ⬜ not started. This plan is written from a
-> **clean slate — every phase below is ⬜ (not started).** **26 phases** across six
-> tracks; phases within a track are ordered, tracks overlap. Every phase closes
-> with tests + `cargo clippy` clean + a working demo — that's the definition of
-> done, not a nice-to-have.
+The shape is **ports & adapters** (hexagonal): a headless **engine** drives three external
+I/O ports — `MarketDataProvider`, `AiProvider`, and (later, guarded) `BrokerProvider` — and
+runs a pluggable **`Strategy`** (the fourth agnostic seam; internal, not I/O) over canonical
+data. Every **surface** (the `exub` CLI now; MCP and an optional API later) only *renders*
+what the engine found — no surface calls a feed, a model, a broker, or a strategy directly.
+The cheap-vol / proven-mover screen is the **flagship reference strategy**, not the product:
+momentum, mean-reversion, breakout — over equities, futures, crypto, FX — plug into the same
+seam. The operating manual is [`.rules`](./.rules); hard-to-reverse decisions land in
+`ARCHITECTURE.md` as they're made.
 
-## §0 The spine — one headless engine, three ports, pure-view surfaces
+Three keystones hold it up:
 
-This is **ports & adapters** (hexagonal). A headless **engine** answers a discovery
-question by driving three *ports* — a [`MarketDataProvider`], an [`AiProvider`],
-and (later, guarded) a [`BrokerProvider`] — and every **surface** (the `exub` CLI
-now; an API later) only *renders* what the engine found. No surface calls a feed,
-a model, or a broker directly.
+1. **Agnostic by trait, never by vendor.** A new feed, model, broker, or strategy is a **new
+   adapter behind a trait and nothing else**; the core depends on none of them. Adapters are
+   feature-gated so a lean build compiles without every vendor SDK. The registry is the one
+   place a vendor is named: config resolves a name → a boxed adapter; capabilities are
+   declared (`Capability`), and the engine only plans a query a provider can answer. If a
+   change makes the core name a vendor, the design is wrong.
+2. **Grounded discovery, never advice.** The engine answers from data it actually fetched,
+   **authors every figure itself** (IV rank, realized/implied, move counts — never the LLM),
+   and reports provenance: metric, value, the exact bars/IV history used, the provider. It
+   surfaces *candidates + evidence*, never a verdict, and no layer ever emits "buy this."
+   The guardrails are types + tests, not convention: execution defaults to paper
+   (`EXUB_TRADING_MODE=paper`), a mechanical risk check fronts anything resembling a trade,
+   going live is a deliberate multi-step human act, and secrets never enter the repo.
+3. **The differentiator is what the engine computes and keeps — never raw access.** Massive
+   (and others) already expose raw market data to agents over MCP, so raw access is not a
+   reason to build. The engine earns its existence three ways: **(a)** deterministic, cited
+   computation an LLM can't be trusted to do; **(b)** accumulated state no snapshot returns —
+   the flagship needs a 1–3yr IV *series* to rank against, which no snapshot call provides,
+   so the engine persists it (Phase 8) and the signal is computable *only because the engine
+   exists*; **(c)** becoming a **higher-order MCP** (Phase 17) that serves grounded, cited
+   signals to Claude Code / Gemini CLI / Codex — the mirror of a vendor's raw-data MCP. A
+   live feed (Phase 7) is *plumbing* whose value is realized by Phases 8 + 17; if a change
+   turns the engine into a thin passthrough of a vendor's data, it has lost its reason to
+   exist.
 
-```
-   adapters (ports)                 core (the headless engine)             surfaces
- ┌────────────────────────┐ screen ┌───────────────────────────────┐ read ┌──────────────┐
- │ Data:   polygon/…/mock  │◀────▶ │  screen → ground → cite;        │ ───▶ │ CLI  `exub`   │
- │ AI:     claude/…/mock   │◀────▶ │  canonical schema. The engine   │ ───▶ │ API  (later)  │
- │ Broker: paper/…  (gated)│◀────▶ │  authors the numbers, not the   │      └──────────────┘
- └────────────────────────┘        │  model; never a recommendation. │   every surface renders
-   raw APIs mapped to the          └───────────────────────────────┘   grounded candidates + evidence
-   canonical schema here
-```
-
-The flow is one-directional: **question → the engine screens/computes over
-canonical data → it surfaces candidates and the evidence that justifies them,
-each cited → the surface renders it.** The engine — not the LLM — authors every
-figure (IV rank, realized/implied, move count), so a number can't drift into a
-hallucination, and no layer ever emits "buy this."
-
-## §0.5 The engineering contract (what every phase leans on)
-
-1. **Ports & adapters.** A new feed, model, or broker is a **new adapter behind a
-   trait and nothing else**; the core depends on none of them. Adapters are
-   feature-gated so a lean build compiles without every vendor SDK.
-2. **Grounded discovery, not advice.** The engine answers from data it actually
-   fetched, computes the figure itself, and reports provenance (metric, value,
-   bars/IV history used, provider). It surfaces *candidates + evidence*, never a
-   recommendation or a verdict. A **grounding check** ships with the first real
-   adapter, not at the end.
-3. **Canonical schema = anti-corruption layer.** Providers map raw API → the
-   engine's canonical types (`Bar`, `IvSnapshot`, screen results); the engine
-   never sees raw. This contains provider **API drift** to one adapter.
-4. **Drift caught in CI.** Every real adapter has **contract tests over recorded
-   fixtures** (deterministic, offline). A provider/model contract change fails
-   CI, not a premarket scan.
-5. **Capabilities, declared.** Each provider states what it can serve (bars, IV,
-   options chain, …); the engine only plans a query a provider can answer, and
-   fails fast and clearly otherwise.
-6. **Async + streaming seams.** The seams are `async` (`tokio`, object-safe via
-   `async-trait` so the engine can hold `Box<dyn …>` chosen at runtime); results
-   stream to the surface as they're found.
-7. **Mock-first, keyless.** A permanent mock feed + mock model make everything
-   build, test, and demo with **no API keys, no network** — and are the basis for
-   deterministic **known-answer evals** of the screens.
-8. **Twelve-factor & secrets-out-of-repo.** Layered config **flags > env
-   (`EXUB_*`) > file (TOML) > defaults**; adapter selection is config, not code.
-   Secrets come from **provider-native env vars only** (`POLYGON_API_KEY`,
-   `ANTHROPIC_API_KEY`, …) — never the config file, a log, or a fixture; held in
-   `secrecy::SecretString` at the adapter edge.
-9. **Structured errors, no panics.** One `ProviderError` vocabulary
-   (NotFound/Auth/RateLimited/Transport/Unsupported/…); `unwrap`/`expect`/`panic!`
-   denied outside tests — a failed feed/model/broker call is a value that degrades
-   to a clear message.
-
-## §0.55 Why this engine exists (the differentiator — read before prioritizing)
-
-Massive (and others) already expose raw market data to agents over **MCP**, so raw
-*access* is not a reason to build. The engine earns its existence by what it does
-*on top* of any feed — and the build order must center that, not raw-feed wiring:
-
-1. **Deterministic, cited computation an LLM can't be trusted to do.** IV rank,
-   realized/implied, move-counting — the engine authors these numbers and cites
-   their inputs; the model never eyeballs them. *(The whole of Track C.)*
-2. **Accumulated IV-history state no snapshot returns** (Phase 8 ⭐). IV rank needs
-   the 1–3yr IV *series*; a snapshot MCP call can't give it. The engine persists it,
-   so the core signal is computable *only because the engine exists*. **This is the
-   reason to exist — prioritize it over a bare feed.**
-3. **The engine becomes a higher-order MCP** (Phase 17 ⭐): it exposes *grounded,
-   cited signals* ("cheap-vol candidates + evidence") to Claude Code / Gemini CLI /
-   Codex — the mirror of Massive's raw-data MCP. Their LLM picks the trade; our
-   engine supplies the trustworthy number.
-
-Corollary for sequencing: a live feed (Phase 7) is **plumbing** whose value is only
-realized by Phases 8 + 17. If a change turns the engine into a thin passthrough to a
-vendor's data, it has lost its reason to exist.
-
-## §0.6 Guardrails (non-negotiable — from CLAUDE.md)
-
-The discovery engine never crosses into acting. These are enforced by types +
-tests, not convention:
-
-1. **No live orders without an explicit human go.** Execution defaults to paper
-   (`EXUB_TRADING_MODE=paper`); flipping to real money is a deliberate, manual,
-   multi-step act — never inferred, never done by the engine or an agent.
-2. **A risk check in the loop for anything resembling a trade** (sizing, mandate,
-   tail/earnings/liquidity checks) — the mechanical in-code risk engine (Phase 21),
-   with veto.
-3. **Decision support, not advice.** The engine surfaces evidence and stress-tests
-   theses; the human places the trade and owns the risk.
-4. **Never commit secrets.** Keys in `.env` (gitignored); `.env.example` documents
-   the shape.
-
-## Phase index
-
-1 vol math + screen + CLI · 2 ~~AI layer~~ (dropped → Track D) · 3 provider
-contracts · 4 config/CI/xtask ·
-5 async seams + registry · 6 canonical schema & errors · 7 Polygon data ·
-8 IV history + storage ⭐ · 9 second feed + cache · 10 universe & symbology ·
-11 screen output · 12 more screens (skew/term) · 13 backtest · 14 screen evals ·
-15 AI seam depth · 16 real AI adapters · 17 engine↔agent + MCP ⭐ · 18 thesis
-pipeline · 19 broker seam · 20 paper fills · 21 risk engine · 22 live gate ·
-23 journal · 24 scheduled scan · 25 packaging/signing · 26 CLI/TUI cockpit.
+The discipline test for every step: *"does this make discovery more grounded — more computed
+by the engine, better cited, more strategy- and vendor-agnostic — without recommending,
+acting, or naming a vendor in the core?"* If no, it sinks to a later phase. **The mock feed +
+mock model keep every phase keyless and offline-testable.** We do not start a phase until the
+one before it is green on the gate.
 
 ---
 
-## Track A — Foundation, contracts & rigor
+## §0.5 How to work this roadmap (the agent loop)
 
-### Phase 1 — Vol math + screen framework + CLI demo ✅ *(verified via `cargo xtask ci`)*
-- [x] Pure vol math in `vol` — realized vol, IV rank/percentile, implied−realized
-  spread, big-move detection. Deterministic, dependency-free, offline-testable.
-- [x] The cheap-vol / proven-mover screen in `signals`, built over the market-data
-  trait; every metric a pure function tested against known inputs.
-- [x] `exub scan` demo over a synthetic universe so the whole pipeline is visible
-  end-to-end before any live data.
+This file is the **single source of truth for progress**. The checkboxes are the state; no
+other tracker exists. **Every box below is intentionally unchecked: the repo predates this
+rewrite, and earlier iterations built much of Phases 1–6. The reset is deliberate — re-verify
+prior work instead of trusting it. Early iterations are audits, not rebuilds.** Work it as a
+loop:
 
-### Phase 2 — ~~AI layer (subagents + skills)~~ — **dropped** ✂️ *(superseded by Track D)*
-The original Claude-Code-specific AI layer — a subagent squad (vol-quant,
-research-analyst, risk-manager, devils-advocate) and slash-command skills
-(`/vol-scan`, `/research-ticker`, `/thesis`) under `.claude/` — was **removed**
-(files dropped from git; `CLAUDE.md` + `README.md` reframed). *Why:* it was
-harness-specific convenience, not part of the defensible engine, and it's subsumed
-by the **in-engine AI layer** — `AiProvider` adapters (Phase 16), the MCP surface
-(Phase 17), and the cited thesis pipeline (Phase 18). The valuable part — the
-research → thesis → risk → adversarial-review *process* — moves into the engine
-there, harness-agnostic. `CLAUDE.md` remains as the operating manual.
+1. **Locate.** The current item is the first unchecked box in the lowest-numbered phase with
+   unchecked boxes. Work strictly in ID order (`P3.2` before `P3.3`) unless a box says
+   otherwise.
+2. **Verify before building.** An item may already be partially or fully satisfied by
+   existing code. Audit the codebase against the item first; if it's genuinely done, run the
+   gate and check the box (that *is* the iteration). Never rebuild what exists; close the
+   gap instead.
+3. **Implement exactly the item.** One item ≈ one iteration ≈ one reviewable change. Don't
+   reach ahead into later items "while you're in there" — that's how phases bleed together.
+4. **Gate.** `cargo xtask ci` must be green before an item is done (fmt · clippy
+   `-D warnings` · build · test · docs · feature powerset · `cargo-deny` — all keyless and
+   offline). An item whose box mentions a test or doc isn't done until that test/doc exists.
+5. **Check the box in the same commit as the work**, and reference the ID in the commit
+   message (e.g. `P8.2: persist ATM IV behind the Store trait`). A checked box with no
+   commit behind it is a lie; a landed change with an unchecked box is invisible.
+6. **Advance.** A phase is done only when its **Exit gate** line passes end-to-end. Never
+   start phase N+1 before phase N's exit gate is green.
 
-### Phase 3 — Provider-agnostic contracts ✅ *(verified via `cargo xtask ci`)*
-- [x] `exub-core`: the `Provider`/`Capability` base, a unified `ProviderError`, and
-  the three seams (`MarketDataProvider`, `BrokerProvider`, `AiProvider`).
-- [x] Mock/paper/echo reference impls; `market-data` + `signals` depend on the
-  traits, never a concrete vendor.
+**Epics.** An item tagged `(epic)` is too big for one iteration: before implementing, expand
+it in-place into lettered sub-boxes (`P8.2a`, `P8.2b`, …) sized to one iteration each — that
+expansion is itself one iteration — then work the sub-boxes.
 
-### Phase 4 — Config, CI & xtask scaffolding ✅ *(verified via `cargo xtask ci`)*
-The 12-factor + rigor substrate, before any real I/O.
-- [x] Layered `Config` (**flags > env (`EXUB_*`) > file (TOML) > defaults**);
-  adapter selection + trading mode are config, not code. `tracing` logs to
-  **stderr**, stdout reserved for output.
-- [x] `cargo xtask ci` — the local gate (fmt, clippy `-D warnings`, build, test,
-  docs, feature powerset, `cargo-deny`) — mirrored by a GitHub Actions CI job.
-- [ ] `secrecy` for keys lands with the first real adapter (Phase 7) — config
-  never holds secrets, so it belongs at the adapter edge, not here.
+**Decision items** are tagged `(decision)`: they produce a dated entry in `ARCHITECTURE.md`
+(the decision, the alternatives, the why) and get checked when it's merged.
 
-### Phase 5 — Async seams + adapter registry 🚧 *(async + registry done; streaming pending)*
-The irreversible shape decision, done while mock-only (cheap now, expensive after
-a live adapter).
-- [x] Make all three seams `async` (`async-trait`, driven by `tokio`); the engine
-  holds `Box<dyn MarketDataProvider>` / `Box<dyn AiProvider>` for runtime
-  selection, and `signals` screens over `&dyn MarketDataProvider`.
-- [x] A **registry** mapping a config name → boxed adapter (`build_data_provider` /
-  `build_ai_provider`); a plug-in **catalog** (`exub providers`) listing every
-  data feed, AI model, coding agent, and broker with wired/planned status. Coding
-  agents (Claude Code, Gemini CLI, Codex) ride the `AiProvider` seam as
-  `ProviderKind::Agent` + `Capability::CodingAgent`.
-- [ ] Stream screen results / answers to a `TokenSink`-style surface; `--json`
-  stays atomic (lands with the AI-driven `ask` command in Phase 15/16).
-
-### Phase 6 — Canonical schema & error hardening ✅ *(verified via `cargo xtask ci`)*
-- [x] Canonical types (`Bar`, `IvSnapshot`, `CheapVolResult`, `ProviderError`) are
-  `#[non_exhaustive]` with constructors, so the schema evolves additively without
-  breaking downstream `match`es or struct literals.
-- [x] **Decision — f64 for stats, decimal at the money edge:** prices/vols stay
-  `f64` (the correct representation for the statistical vol math — log returns,
-  stddev, ranks); exact decimal money is reserved for the order/broker edge
-  (Phase 19), *not* the vol pipeline. Timestamps stay epoch-seconds **UTC** (market
-  close); a typed time crate isn't worth the dependency yet.
-- [x] `ProviderError` grown to the structured set incl. `RateLimited { retry_after }`;
-  **no-panic lint** (`unwrap_used`/`expect_used` denied outside tests via workspace
-  lints + `clippy.toml`) — production code is panic-free.
+**When the map is wrong.** If an item turns out to be obsolete, mis-scoped, or blocked by a
+decision above your pay grade: don't silently skip it and don't silently do something else.
+Edit this file (reword / split / move the item) in its own commit with a one-line rationale,
+or stop and ask. The roadmap must always describe reality. (Phase 2 below is exactly such an
+edit, kept as a tombstone.)
 
 ---
 
-## Track B — Live market data
+## Phase 1 — Vol math + screen framework + CLI demo
+Goal: the flagship strategy's math and screen, provable offline — pure vol primitives, the
+cheap-vol / proven-mover screen, and a CLI demo so the whole pipeline is visible end-to-end
+before any live data exists.
 
-### Phase 7 — Polygon (`massive`) market-data provider ⬜ *(plumbing — see §0.55)*
-Implement `MarketDataProvider` for real, feature-gated (`polygon-live`). On its own
-this is just raw access (what Massive's MCP already offers) — its payoff is Phases
-8 + 17 built on top.
-- [ ] REST aggregates → `daily_bars`; options snapshot → `iv_snapshot` (ATM/30-day
-  IV). Key from `POLYGON_API_KEY` (env only, `SecretString`).
-- [ ] Shared HTTP module (client, timeouts, retries/backoff, `Retry-After`);
-  **contract tests over recorded fixtures**; live path opt-in.
+- [ ] **P1.1** Pure vol math in `vol`: log/simple returns, sample std-dev, annualized
+      realized vol, IV rank + IV percentile, implied−realized spread, realized/implied
+      ratio, max-move + big-move counting. Deterministic, dependency-free, offline-testable;
+      a known-answer test for every function.
+- [ ] **P1.2** The cheap-vol / proven-mover screen in `signals`, built over the market-data
+      trait *(formalized in Phase 3 — the two phases landed together)*: `evaluate` returns
+      the full evidence record with human-readable `fail_reasons` (failure is a value, never
+      a panic); `scan` returns only passers, sorted most-underpriced first, skipping symbols
+      the source can't serve.
+- [ ] **P1.3** `exub scan` demo over a synthetic universe — cited evidence rendered
+      end-to-end, keyless and offline, framed as evidence-not-advice.
 
-### Phase 8 — IV history pipeline + storage seam ⬜ ⭐ *(the reason to exist — §0.55)*
-IV rank needs 1–3yr of trailing IV that **no snapshot call returns** — so this is
-the capability the engine exists to provide, not a nice-to-have. Prioritize it
-right behind the first feed.
-- [ ] **Acquisition is capability-driven** (a `Capability::OptionsHistory` flag +
-  an `iv_history_strategy` selector): a feed with historical options-with-IV (e.g.
-  Alpha Vantage) is **backfilled** in a bounded batch; a snapshot-only feed (e.g.
-  Massive's IV snapshot) is **accumulated forward**. The screen is identical either
-  way — the anti-corruption layer hides which feed filled the distribution.
-- [ ] Persist daily ATM IV via a `Store` trait (SQLite default, in-memory for
-  tests) so `iv_rank` ranks against a real distribution; the store also caches bars
-  and later feeds the journal. Grounded output cites the exact history window used.
+**Exit gate:** all P1 boxes checked · `cargo xtask ci` green · `exub scan` renders the demo
+screen offline with no API keys.
 
-### Phase 9 — Second feed + caching / fan-out ⬜
-- [ ] A second `MarketDataProvider` (e.g. Alpha Vantage, or Tradier/Alpaca data) on
-  the *same* trait — the real test of agnosticism, and the case that proves the
-  capability-driven IV-history strategy (backfill vs accumulate) from Phase 8.
-- [ ] A caching/fan-out provider: try primary, fall back on error, cache reads to
-  respect rate limits — **essential**, not optional, for a feed like Alpha Vantage
-  (free tier on the order of ~25 requests/day; you can't scan a universe without
-  it). **Respect each source's redistribution terms.**
+## Phase 2 — AI layer (subagents + skills) — dropped
+A tombstone, not work. The `.claude/` subagent squad + slash-command skills were **removed**:
+harness-specific convenience, not part of the defensible engine. Their value (the research →
+thesis → risk → adversarial-review *process*) lives in the in-engine AI layer, Phases 15–18.
+The `#2` slot is kept only so later phase numbers — and the cross-references in code, docs,
+and commit history that cite them — don't shift. Do not recreate them as `.claude/` files;
+put the value in the engine.
 
-### Phase 10 — Universe & symbology ⬜
-- [ ] Real universe input for `exub scan` (index constituents, sector ETFs, custom
-  lists) + liquidity pre-filters; a symbology layer normalizing tickers + OCC
-  option symbols across providers.
+**Exit gate:** none — nothing to verify. Proceed to Phase 3.
+
+## Phase 3 — Provider-agnostic contracts
+Goal: the contracts every adapter implements — the base provider/capability model, one error
+vocabulary, and the three I/O seams — with reference impls proving them. Nothing
+vendor-specific anywhere.
+
+- [ ] **P3.1** `exub-core`: the object-safe `Provider` base trait + `ProviderInfo` identity
+      card + `ProviderKind` (MarketData / Broker / Ai / Agent) + the `Capability` vocabulary
+      with `supports()` probing — screeners and the orchestrator branch on capability, never
+      on a vendor name.
+- [ ] **P3.2** A unified `ProviderError` (NotFound / Auth / RateLimited / Transport /
+      Unsupported / Refused / NotImplemented): every failed provider call is a typed value
+      that degrades to a clear message.
+- [ ] **P3.3** The three I/O seams — `MarketDataProvider` (daily bars + IV snapshot),
+      `BrokerProvider` (account, orders, `TradingMode`), `AiProvider` (prompt → completion).
+      The fourth agnostic seam, `Strategy`, is internal and lands in Phase 11.
+- [ ] **P3.4** Reference impls proving the seams: `PaperBroker` + `EchoAi` in `exub-core`,
+      the `MockSource` feed in `market-data` — and the dependency direction enforced:
+      `market-data` + `signals` depend on the traits, never a concrete vendor.
+
+**Exit gate:** all P3 boxes checked · `cargo xtask ci` green · the screen runs against
+`MockSource` purely through the trait; a capability probe answers without a vendor `if`.
+
+## Phase 4 — Config, CI & xtask scaffolding
+Goal: the 12-factor + rigor substrate, before any real I/O — so every later phase inherits
+the gate instead of relitigating discipline by hand.
+
+- [ ] **P4.1** Layered `Config` (**flags > env (`EXUB_*`) > file (TOML) > defaults**) with a
+      pure `resolve()` fold and precedence pinned by unit tests; adapter selection + trading
+      mode are config, not code; **secrets never enter the config** — provider-native env
+      vars only (`MASSIVE_API_KEY`, `ANTHROPIC_API_KEY`, …), read at the adapter edge.
+- [ ] **P4.2** `tracing` logs to **stderr**, filtered by config; stdout reserved for data,
+      so `exub scan 2>/dev/null` stays pipe-clean.
+- [ ] **P4.3** `cargo xtask ci` — the local gate: fmt · clippy `-D warnings` · build · test ·
+      docs (`RUSTDOCFLAGS=-D warnings`) · feature powerset (`cargo-hack`) · `cargo-deny`,
+      with `RUSTFLAGS=-D warnings` on every step, stopping at the first failure. Keyless.
+- [ ] **P4.4** A GitHub Actions workflow mirroring the gate step-for-step, plus one
+      aggregate required status check so branch protection needs a single rule.
+
+**Exit gate:** all P4 boxes checked · `cargo xtask ci` green locally **and** in CI with no
+API keys · the precedence tests pin flags > env > file > defaults.
+
+## Phase 5 — Async seams + adapter registry
+Goal: the irreversible shape decision — async seams and the runtime registry — made while
+mock-only (cheap now, expensive after a live adapter exists).
+
+- [ ] **P5.1** All three seams `async` (`async-trait`, driven by `tokio`); the engine holds
+      `Box<dyn MarketDataProvider>` / `Box<dyn AiProvider>` selected at runtime; `signals`
+      is generic over `S: MarketDataProvider + ?Sized` so it screens over a `&dyn` from the
+      registry.
+- [ ] **P5.2** The **registry** — the one place a vendor is named: config name → boxed
+      adapter (`build_data_provider` / `build_ai_provider`); selecting a planned-but-unwired
+      vendor is a clear, actionable error, never a silent fallback.
+- [ ] **P5.3** The plug-in **catalog** (`exub providers`): every intended data feed, AI
+      model, coding agent, and broker with wired/planned status. Coding agents (Claude Code,
+      Gemini CLI, Codex) ride the `AiProvider` seam as `ProviderKind::Agent` +
+      `Capability::CodingAgent` — no separate trait.
+- [ ] **P5.4** Stream screen results / answers to a `TokenSink`-style surface as they're
+      found; `--json` stays atomic. (Expected to land with the AI-driven `ask` loop — if it
+      moves to Phase 15, record the move per §0.5.)
+
+**Exit gate:** all P5 boxes checked · `cargo xtask ci` green · `exub providers` renders the
+catalog; a planned vendor errors actionably; the screen runs through a `Box<dyn …>` chosen
+from config.
+
+## Phase 6 — Canonical schema & error hardening
+Goal: the canonical types hardened for additive evolution, and the numeric/time/error story
+decided once — before real adapters multiply the cost of changing them.
+
+- [ ] **P6.1** Canonical types (`Bar`, `IvSnapshot`, `CheapVolResult`, `ProviderError`) are
+      `#[non_exhaustive]` with constructors, so the schema evolves additively without
+      breaking downstream matches or struct literals.
+- [ ] **P6.2** (decision) **f64 for stats, decimal at the money edge:** prices/vols stay
+      `f64` — the correct representation for statistical vol math (log returns, stddev,
+      ranks); exact decimal money is reserved for the order/broker edge (Phase 19), *not*
+      the vol pipeline. Timestamps stay epoch-seconds **UTC** (market close); a typed time
+      crate isn't worth the dependency yet.
+- [ ] **P6.3** `ProviderError` grown to the structured set incl.
+      `RateLimited { retry_after }`; the **no-panic lint** (`unwrap_used` / `expect_used`
+      denied outside tests via workspace lints + `clippy.toml`) — production code is
+      panic-free by construction.
+
+**Exit gate:** all P6 boxes checked · `cargo xtask ci` green · adding a field to a canonical
+type compiles downstream crates without edits (the constructors + `#[non_exhaustive]` prove
+it).
+
+## Phase 7 — Massive market-data provider
+Goal: the first real feed, behind the same trait. **Plumbing, per §0 keystone 3** — on its
+own this is raw access (what a vendor's MCP already offers); its payoff is Phases 8 + 17
+built on top. Do not treat wiring it as the product.
+
+- [ ] **P7.1** `MassiveSource` behind a `massive-live` feature: REST aggregates →
+      `daily_bars`; options snapshot → `iv_snapshot` (ATM / 30-day IV). Key from
+      `MASSIVE_API_KEY` (env only, held in `secrecy::SecretString` at the adapter edge).
+- [ ] **P7.2** **Data correctness (the #1 bug class):** explicit adjusted-vs-unadjusted
+      handling for splits/dividends (realized vol on unadjusted prices is *wrong*),
+      trading-calendar / session / timezone handling, and bad-tick + missing-bar
+      validation — before any screen trusts the data.
+- [ ] **P7.3** A shared HTTP module: client construction, timeouts, retries with backoff,
+      `Retry-After` honored and surfaced as `ProviderError::RateLimited { retry_after }`.
+- [ ] **P7.4** **Contract tests over recorded fixtures** — deterministic and offline, so
+      provider API drift fails CI, not a premarket scan. The live path is opt-in and never
+      runs in CI.
+
+**Exit gate:** all P7 boxes checked · `cargo xtask ci` green offline · with a real key set
+locally, `exub scan --data-provider massive` returns real, cited candidates.
+
+## Phase 8 — IV history pipeline + storage seam
+Goal: **the reason to exist** (§0 keystone 3b). IV rank needs 1–3 years of trailing IV that
+no snapshot call returns; the engine persists it, making the flagship signal computable only
+because the engine exists. Prioritize this directly behind the first feed.
+
+- [ ] **P8.1** Acquisition is **capability-driven** via `Capability::OptionsHistory` + the
+      `iv_history_strategy` selector: a feed serving historical options-with-IV (e.g. Alpha
+      Vantage, ORATS) **backfills** the distribution in a bounded batch; a snapshot-only
+      feed (e.g. Massive) **accumulates forward**. The screen is identical either way — the
+      anti-corruption layer hides which feed filled the distribution.
+- [ ] **P8.2** (epic) A `Store` trait (SQLite default, in-memory for tests): persist daily
+      ATM IV per symbol; cache bars to respect rate limits; the same store later feeds the
+      journal (Phase 23).
+- [ ] **P8.3** Grounded output cites the exact history window used (span, observation
+      count, source), and `iv_rank` ranks against the real persisted distribution — not a
+      mock's.
+
+**Exit gate:** all P8 boxes checked · `cargo xtask ci` green · two consecutive scans
+accumulate IV into the store and the second cites a longer window; a backfill-capable feed
+fills a 1yr+ distribution in one bounded run.
+
+## Phase 9 — Second feed + caching / fan-out
+Goal: prove the agnosticism claim with real second feeds — each chosen for the role it
+fills — plus the caching/fan-out layer that brutal free-tier rate limits make mandatory.
+
+- [ ] **P9.1** **Yahoo Finance (unofficial)** — the **keyless** real feed for onboarding
+      (equities/ETFs, some FX/crypto); the best first-run after the mock since it needs no
+      signup. Unofficial + ToS-gray → **synthetic fixtures only**, live path opt-in, never
+      redistribute its data.
+- [ ] **P9.2** An options/vol specialist — **ORATS (or Intrinio)** — advertises
+      `Capability::OptionsHistory` and serves historical IV / vol surfaces, so it
+      **backfills** the Phase-8 distribution directly instead of accumulating forward. The
+      highest-leverage add for the flagship strategy.
+- [ ] **P9.3** A caching / fan-out provider: try primary, fall back on error, cache reads to
+      respect rate limits — essential, not optional, for a feed like **Alpha Vantage** (free
+      tier on the order of ~25 requests/day; a universe scan is impossible without it).
+      Respect each source's redistribution terms.
+- [ ] **P9.4** An **events / catalysts capability** (earnings dates, corporate events) as a
+      distinct `Capability` behind the provider seam — served by **Financial Modeling Prep
+      (or Finnhub)**. Feeds the proven-mover context *and* the Phase-21 earnings-landmine
+      check.
+
+*(Further candidates as coverage demands: Databento and Twelve Data for broad multi-asset
+incl. futures/crypto/FX; Tradier/Alpaca/IBKR dual-use with their broker credentials. Skip
+IEX Cloud — shut down 2024.)*
+
+**Exit gate:** all P9 boxes checked · `cargo xtask ci` green · the same screen runs unchanged
+over two real feeds; a rate-limited feed completes a universe scan through the cache.
+
+## Phase 10 — Universe & symbology
+Goal: scan real universes, not a hardcoded demo list — across asset classes, with symbols
+normalized so providers agree on what a thing is called.
+
+- [ ] **P10.1** Real universe input for `exub scan`: index constituents, sector ETFs, custom
+      lists, and non-equity universes; liquidity pre-filters so illiquid names don't waste
+      the request budget.
+- [ ] **P10.2** A symbology layer normalizing tickers, option (OCC), futures, and crypto
+      symbols across providers and asset classes.
+- [ ] **P10.3** Extend the canonical schema where non-equity assets need it (futures roll /
+      continuous contracts, crypto 24/7 sessions, FX without volume) — additively, via the
+      Phase-6 `#[non_exhaustive]` types.
+
+**Exit gate:** all P10 boxes checked · `cargo xtask ci` green · a scan over a named universe
+(e.g. an index's constituents) runs end-to-end with liquidity pre-filtering.
+
+## Phase 11 — Engine orchestrator + Strategy seam + cited `Finding`
+Goal: where "all traders" becomes real — the headless `Engine` §0 promises, and the
+`Strategy` trait that lets any strategy plug in the way a provider does. Cheap-vol becomes
+the flagship *reference implementation*, not the hard-coded point.
+
+- [ ] **P11.1** The **`Engine`** — the headless orchestrator: owns the runtime-selected data
+      provider (and later AI/broker) + the chosen `Strategy`, runs the screen/compute, and
+      returns a cited result. The one object every surface drives — the CLI now, the
+      tool-use loop (Phase 15), the MCP server (Phase 17). Today "the engine" is
+      `signals::scan`; this makes it real, and it is a prerequisite for Phases 15–18.
+- [ ] **P11.2** The **`Strategy` trait** (the fourth agnostic seam, alongside data / AI /
+      broker): canonical data in → cited **`Finding`s** out — symbol + strategy + the
+      metrics that justify it + provenance. The cheap-vol screen becomes its first impl;
+      `CheapVolResult` generalizes to `Finding`, so an equity setup, an option structure,
+      or a futures spread all surface the same way.
+- [ ] **P11.3** JSON + table output for `exub scan`, sortable/filterable — a
+      machine-readable, cited evidence set, never a verdict.
+
+**Exit gate:** all P11 boxes checked · `cargo xtask ci` green · two different strategies
+produce `Finding`s through the same `Engine` call; `--json` output round-trips.
+
+## Phase 12 — Strategy library (vol depth + non-vol strategies)
+Goal: make the seam earn its keep — deepen the flagship and add strategies that have nothing
+to do with vol, proving the engine is for all traders.
+
+- [ ] **P12.1** Deepen the flagship's vol math beyond ATM: term structure, skew,
+      front-vs-back — each metric a pure, tested function in `vol`.
+- [ ] **P12.2** (epic) **Non-vol strategies** on the same seam — momentum, mean-reversion,
+      breakout, pairs — across asset classes; each a pure, tested `Strategy` impl.
+
+**Exit gate:** all P12 boxes checked · `cargo xtask ci` green · at least one non-vol strategy
+surfaces cited `Finding`s over the same engine and data the flagship uses.
+
+## Phase 13 — Backtest harness
+Goal: measure whether a strategy's findings actually realize — offline, reproducible, over
+fixtures — so a strategy earns trust with numbers, not vibes.
+
+- [ ] **P13.1** Replay historical data through any `Strategy` to measure how often its
+      findings realize (the flagship: "cheap vol on a proven mover"); entry/exit simulation
+      + summary stats. Offline (mock/fixtures), no live data.
+
+**Exit gate:** all P13 boxes checked · `cargo xtask ci` green · a backtest over fixture data
+produces a deterministic summary for two different strategies.
+
+## Phase 14 — Strategy evals (grounding, in CI)
+Goal: the honesty backstop, standing in CI — every metric proven against known answers, and
+every surfaced finding proven to be backed by the data it cites.
+
+- [ ] **P14.1** Known-answer evals for every strategy/metric: verifiable inputs → asserted
+      outputs, run by the gate.
+- [ ] **P14.2** A **grounding check** in CI: a surfaced `Finding` is backed by the exact
+      data it cites — recompute from the cited inputs and compare. Grows with every later
+      phase.
+
+**Exit gate:** all P14 boxes checked · `cargo xtask ci` green · the grounding check is a
+standing CI test that would fail on a fabricated or drifted figure.
+
+## Phase 15 — AiProvider seam depth (tool-use loop)
+Goal: grow the AI seam from prompt→completion into a tool-use loop where the model *plans*
+and the **engine computes** — the division of labor that keeps numbers unhallucinatable.
+
+- [ ] **P15.1** A tool-use loop on `AiProvider`: the model plans a query, the **engine runs
+      it** (fetch + compute + cite) — the model chooses *what to look at*, never authors a
+      number.
+- [ ] **P15.2** Streaming, token accounting, and model selection on the same seam.
+
+**Exit gate:** all P15 boxes checked · `cargo xtask ci` green · a mock-model tool-use round
+trip: plan → engine computes → cited answer, fully offline.
+
+## Phase 16 — Real AI adapters (Claude, then others)
+Goal: the first real `AiProvider`s, contract-tested like any other adapter — the seam proven
+by a second vendor, not just designed for one.
+
+- [ ] **P16.1** An Anthropic adapter (tool-use, streaming), feature-gated, key from
+      `ANTHROPIC_API_KEY`; **contract tests over recorded completions** so model-API drift
+      fails CI.
+- [ ] **P16.2** A second model (Gemini / OpenAI / local) on the same seam — the proof the
+      seam is real. Coding agents keep riding `AiProvider` as `ProviderKind::Agent`.
+
+**Exit gate:** all P16 boxes checked · `cargo xtask ci` green offline · with a key set
+locally, the tool-use loop answers a discovery question through a real model with every
+figure engine-authored.
+
+## Phase 17 — Engine ↔ agent bridge + MCP surface
+Goal: **the reason to exist** (§0 keystone 3c) — the engine becomes a higher-order MCP, the
+mirror of a vendor's raw-data MCP: theirs hands over raw bars and cites nothing; ours returns
+grounded candidates with provenance.
+
+- [ ] **P17.1** Expose the engine's discovery capabilities (scan, evaluate, backtest) as
+      **MCP tools** that agentic assistants (Claude Code, Gemini CLI, Codex) call — *their*
+      LLM reasons about which trade; *our* engine screens, computes, and **cites** the
+      number.
+- [ ] **P17.2** The MCP tool-server is another pure view over the same `Engine` (no logic of
+      its own); the `massive` MCP remains a possible upstream feed, never a competitor.
+
+**Exit gate:** all P17 boxes checked · `cargo xtask ci` green · an MCP client calls a scan
+tool and receives cited `Finding`s identical to the CLI's for the same question.
+
+## Phase 18 — Thesis & decision-support pipeline as code
+Goal: the desk process the dropped Phase-2 skills once sketched, now *in the engine* and
+harness-agnostic — evidence in, a stress-tested thesis out, every step recorded and cited.
+Still support, never a call: the human decides.
+
+- [ ] **P18.1** A reproducible, logged **scan → research → thesis → risk-check →
+      adversarial-review** pipeline; every step records its inputs, outputs, and citations.
+- [ ] **P18.2** **Finding → concrete trade:** turn a candidate into the tradeable structure
+      the thesis rests on — for the vol flagship, the option structure (strike/expiry) with
+      cost + breakeven; for other strategies, the instrument + entry/stop. A `Finding` names
+      *what's mispriced*; this names *what you'd trade* — and still never whether to.
+
+**Exit gate:** all P18 boxes checked · `cargo xtask ci` green · one candidate runs the full
+pipeline offline, producing a logged, cited, adversarially-reviewed thesis document.
+
+## Phase 19 — Broker seam hardening
+Goal: *(execution is not the product — discovery is. Phases 19–22 exist only so a trade
+**you** decided on can route to **any** broker, under the §0 guardrails. The engine never
+places or suggests placing a trade.)* Grow the broker contract from skeleton to
+venue-neutral surface.
+
+- [ ] **P19.1** Grow `BrokerProvider`: positions, open orders, cancel/replace, multi-leg
+      option orders — venue-neutral, capability-declared.
+- [ ] **P19.2** A `TradingMode` that is *structurally* impossible to flip to live without an
+      explicit human acknowledgement — enforced by types + tests, not convention.
+
+**Exit gate:** all P19 boxes checked · `cargo xtask ci` green · a test proves live mode is
+unreachable without the explicit human path.
+
+## Phase 20 — Paper broker with real sandbox fills
+Goal: realistic fills and slippage with zero real-money risk — the paper mock upgraded to a
+real venue's sandbox.
+
+- [ ] **P20.1** Wire the paper broker to a venue's paper endpoint (Tradier / Alpaca sandbox)
+      for realistic fills/slippage; contract-tested over recorded fixtures.
+
+**Exit gate:** all P20 boxes checked · `cargo xtask ci` green offline · a sandbox order
+round-trips place → fill → position with real venue semantics.
+
+## Phase 21 — Risk engine (in-code)
+Goal: the risk mandate as enforced code — §0 keystone 2's "risk check in the loop" made
+mechanical, with veto power over every order path.
+
+- [ ] **P21.1** A risk engine sitting in front of every `place_order`: sizing, max loss,
+      portfolio Greeks limits, earnings/liquidity landmines (fed by the Phase-9 events
+      capability). **Hard veto** — an order the mandate rejects cannot be placed.
+
+**Exit gate:** all P21 boxes checked · `cargo xtask ci` green · tests prove a
+mandate-violating order is vetoed on every path, paper included.
+
+## Phase 22 — Live-trading gate
+Goal: the deliberate, human-only path to real orders — every layer required, none
+inferrable, with a dry-run that shows exactly what would happen.
+
+- [ ] **P22.1** The live gate: explicit env flag + config + interactive confirmation + risk
+      sign-off, **all** required; absence of any one keeps execution in paper.
+- [ ] **P22.2** A dry-run mode printing exactly what *would* be sent, without sending.
+- [ ] **P22.3** Extensive tests that live mode is unreachable by inference — no combination
+      of config/flags short of the full human path reaches a real order.
+
+**Exit gate:** all P22 boxes checked · `cargo xtask ci` green · the unreachability tests
+stand in CI; a dry-run renders the exact order without side effects.
+
+## Phase 23 — Journal crate
+Goal: close the loop from finding to outcome — so a strategy's *real* hit rate becomes
+measurable instead of remembered.
+
+- [ ] **P23.1** Watchlist, trade log, and thesis tracking, persisted via the Phase-8
+      `Store`.
+- [ ] **P23.2** Link the chain: scan hit → research → thesis → (paper) trade → outcome; the
+      strategy's realized hit rate is queryable.
+
+**Exit gate:** all P23 boxes checked · `cargo xtask ci` green · a full chain from finding to
+recorded outcome round-trips through the store.
+
+## Phase 24 — Scheduled premarket scan & alerts
+Goal: the engine runs while you sleep — surface what's *new*, never whether to trade.
+
+- [ ] **P24.1** A scheduled premarket routine running the active strategies, diffing
+      against the watchlist/journal.
+- [ ] **P24.2** Alerts on new candidates via a notification/push seam (delivery is
+      pluggable like everything else); advisory only.
+
+**Exit gate:** all P24 boxes checked · `cargo xtask ci` green · a scheduled run diffs, fires
+on a new candidate, and stays silent on a repeat.
+
+## Phase 25 — Packaging, CI, docs & signed releases
+Goal: ship it honestly — reproducible builds, a written architecture record, and supply-chain
+rigor sized to the actual audience.
+
+- [ ] **P25.1** Tag-triggered release building `--locked` from the committed lockfile, with
+      checksums.
+- [ ] **P25.2** (decision) **Scope call:** SBOM + keyless signing (cosign/sigstore) + a
+      scheduled RustSec advisory audit are right-sized only if exuberance is *distributed*;
+      for a personal cockpit, trim to reproducible `--locked` builds + checksums and add the
+      rest when there are external users.
+- [ ] **P25.3** Consolidate `ARCHITECTURE.md` from the accumulated `(decision)` entries —
+      the design + hard-to-reverse-decisions record §0 references.
+
+**Exit gate:** all P25 boxes checked · `cargo xtask ci` green · a tagged release builds
+reproducibly from the lockfile; `ARCHITECTURE.md` exists and covers every `(decision)` item.
+
+## Phase 26 — CLI/TUI cockpit + optional API surface
+Goal: the daily-driver surface — and a deliberate decision, not a default, on any surface
+beyond the terminal.
+
+- [ ] **P26.1** Grow `exub` into a cockpit: `scan`, `providers`, `research`, `thesis`,
+      `journal`, `positions`, `doctor`; an optional TUI dashboard.
+- [ ] **P26.2** (decision) The optional HTTP/JSON API (and/or a thin SDK) as another pure
+      view over the same `Engine` — only if a non-terminal consumer needs it. The MCP server
+      (Phase 17) already covers agentic callers, so for a solo cockpit CLI + MCP may be
+      enough. Decide before building.
+
+**Exit gate:** all P26 boxes checked · `cargo xtask ci` green · the cockpit covers the full
+find → research → thesis → journal loop from one binary.
 
 ---
 
-## Track C — Discovery / signals (the point)
-
-### Phase 11 — Screen output & ranking ⬜
-- [ ] JSON + table output for `exub scan`, sortable/filterable, with the **full
-  evidence** per candidate (IV rank, realized/implied, move history) and its
-  provenance — a machine-readable, cited evidence set, never a verdict.
-
-### Phase 12 — Term structure, skew & more screens ⬜
-- [ ] Extend the vol math beyond ATM (term structure, skew, front-vs-back); new
-  screens as pure, tested functions over canonical data. The cheap-vol screen is
-  the flagship, not the only lens for *finding* setups.
-
-### Phase 13 — Backtest harness ⬜
-- [ ] Replay historical bars + IV through the screens to measure how often "cheap
-  vol on a proven mover" actually realized — entry/exit simulation, summary stats.
-  Offline (mock/fixtures), no live data.
-
-### Phase 14 — Screen evals (grounding, in CI) ⬜
-- [ ] Known-answer evals for every screen/metric (verifiable inputs → asserted
-  outputs) + a grounding check that a surfaced candidate is backed by the data
-  cited. The honesty backstop; grows every phase.
-
----
-
-## Track D — The AI discovery layer
-
-### Phase 15 — AiProvider seam depth (tool-use loop) ⬜
-- [ ] Grow `AiProvider` into a tool-use loop where the model *plans a query* and
-  the **engine runs it** (fetch + compute), so the model chooses *what to look
-  at*, never authors the number. Streaming, token accounting, model selection.
-
-### Phase 16 — Real AI adapters (Claude, then others) ⬜
-- [ ] Implement `AiProvider` for Anthropic (tool-use, streaming), feature-gated,
-  key from `ANTHROPIC_API_KEY`; contract tests over recorded completions. A second
-  model (Gemini/OpenAI/local) on the same seam proves it. Distinct from the Claude
-  Code *agents*, which stay the interactive brain.
-
-### Phase 17 — Engine ↔ agent bridge + MCP surface ⬜ ⭐ *(the reason to exist — §0.55)*
-The engine becomes a **higher-order MCP**, the mirror of Massive's raw-data MCP.
-- [ ] Expose the engine's discovery capabilities (scan, evaluate, backtest) as MCP
-  tools the AI layer / agentic assistants (Claude Code, Gemini CLI, Codex) call —
-  **their** LLM reasons about *which* trade, **our** engine screens + computes +
-  **cites** the number. One MCP tool-server surface over the same engine (another
-  pure view). Where Massive's MCP hands over raw bars/IV and cites nothing, ours
-  returns grounded cheap-vol candidates with provenance; the `massive` MCP stays a
-  possible upstream feed, not a competitor.
-
-### Phase 18 — Thesis & decision-support pipeline as code ⬜
-- [ ] A reproducible, logged **scan → research → thesis → risk-check → adversarial
-  review** pipeline — the desk process the dropped Claude-Code skills once
-  sketched (Phase 2), now *in the engine* and harness-agnostic: evidence in, a
-  **stress-tested thesis** out, every step recorded and cited. Still support, not a
-  call — the human decides.
-
----
-
-## Track E — Broker & execution (human-initiated, paper-first, guarded)
-
-*Not the product — the discovery engine is. This track exists only so a trade
-**you** decided on can route to **any** broker, under the §0.6 guardrails. The
-engine never places or suggests placing a trade.*
-
-### Phase 19 — Broker seam hardening ⬜
-- [ ] Grow `BrokerProvider` from the skeleton: positions, open orders,
-  cancel/replace, multi-leg option orders; a `TradingMode` that is *structurally*
-  impossible to flip to live without an explicit human acknowledgement.
-
-### Phase 20 — Paper broker with real sandbox fills ⬜
-- [ ] Wire the paper broker to a venue's paper endpoint (Tradier/Alpaca sandbox)
-  for realistic fills/slippage — zero real-money risk; contract-tested.
-
-### Phase 21 — Risk engine (in-code) ⬜
-- [ ] Codify the risk mandate as enforced code sitting in front of every
-  `place_order`: sizing, max loss, portfolio Greeks limits, earnings/liquidity
-  landmines. Hard veto. Guardrail §0.6-2 made mechanical.
-
-### Phase 22 — Live-trading gate ⬜
-- [ ] The deliberate, human-only path to real orders: explicit env flag + config +
-  interactive confirmation + risk sign-off, all required; a dry-run that prints
-  exactly what *would* be sent. Extensive tests that live mode is unreachable by
-  inference.
-
----
-
-## Track F — Journal, automation & product
-
-### Phase 23 — Journal crate ⬜
-- [ ] Watchlist, trade log, thesis tracking (persisted via the Phase-8 store);
-  links a scan hit → research → thesis → (paper) trade → outcome, so the
-  strategy's real hit rate becomes measurable.
-
-### Phase 24 — Scheduled premarket scan & alerts ⬜
-- [ ] A scheduled routine (Claude Code cron / the `schedule` skill) that runs the
-  screen premarket, diffs the watchlist, and alerts on new cheap-vol candidates.
-
-### Phase 25 — Packaging, CI & signed releases ⬜
-- [ ] Tag-triggered release building `--locked` from the committed lock, checksums,
-  SBOM, **keyless-signed** (cosign/sigstore); scheduled RustSec advisory audit.
-  Exercise the whole packaging/signing path early.
-
-### Phase 26 — CLI/TUI cockpit ⬜
-- [ ] Grow `exub` into a cockpit: `scan`, `providers`, `research`, `thesis`,
-  `journal`, `positions`, `doctor`; optional TUI dashboard.
-
----
-
-## Cross-cutting standards (apply to every phase)
-- **Agnostic by trait, not by `if vendor ==`.** New provider = new crate + trait
-  impl. If a phase makes the engine name a vendor, the design is wrong.
-- **Finds, never recommends.** No phase adds a "buy/sell" verdict or autonomous
-  action. The engine surfaces cited evidence; the human decides and acts.
-- **Offline-testable core.** `vol` / `exub-core` / `signals` build and test with no
-  network; live adapters hide behind features and test against fixtures.
-- **Guardrails are code.** Paper-default, risk-in-the-loop, human-only live gate —
-  enforced by types + tests (§0.6).
-- **Decimals internally, percent at the edge.** Money/vol are decimals; format only
-  at display.
-- **Definition of done:** `cargo test --workspace` and `cargo clippy --workspace`
-  green (via `cargo xtask ci`), with tests for the new logic. Every phase.
-
-[`MarketDataProvider`]: ./crates/core/src/market_data.rs
-[`AiProvider`]: ./crates/core/src/ai.rs
-[`BrokerProvider`]: ./crates/core/src/broker.rs
+## Architectural invariants (never traded away)
+- **Agnostic by trait, not `if vendor ==`:** a new feed, model, broker, or strategy is a new
+  adapter behind a trait — never a special case in the core. The registry is the only place
+  a vendor is named; capabilities are declared and probed, never assumed.
+- **Finds, never recommends:** no phase adds a "buy/sell" verdict or an autonomous action.
+  The engine surfaces cited evidence; the human decides and trades.
+- **The engine authors the number, not the LLM:** every figure is computed by the engine and
+  cited to its inputs, so a number can't drift into a hallucination. The model chooses what
+  to look at; it never eyeballs a metric.
+- **Canonical schema is the anti-corruption layer:** adapters map raw APIs → canonical types
+  (`Bar`, `IvSnapshot`, `Finding`); the engine never sees raw. Provider API drift is
+  contained to one adapter and **caught in CI** by contract tests over recorded fixtures.
+- **Mock-first, keyless, offline-testable core:** `vol` / `exub-core` / `signals` build and
+  test with no network and no keys; live adapters hide behind features and test against
+  fixtures. The gate runs green on a machine with no secrets.
+- **Twelve-factor config; secrets out of the repo:** flags > env (`EXUB_*`) > file (TOML) >
+  defaults; adapter selection is config, not code. Secrets come from provider-native env
+  vars only — never the config file, a log, a fixture, or a commit.
+- **Structured errors, no panics:** one `ProviderError` vocabulary; `unwrap` / `expect` /
+  `panic!` denied outside tests. A failed feed/model/broker call is a value that degrades to
+  a clear message.
+- **Guardrails are code:** paper by default; a mechanical risk veto in front of anything
+  resembling a trade; going live is a deliberate, multi-step, human-only act that types +
+  tests make impossible to infer.
+- **Decimals internally, percent at the edge:** money/vol are decimals; format only at
+  display.
+- **Discovery, not everything:** exuberance does *not* do HFT / sub-second execution,
+  automatic order placement, portfolio optimization or allocation, tax-lot accounting, or
+  act as a data vendor (it reads sources you're licensed for and never redistributes their
+  data). It finds and cites; the human decides and trades.

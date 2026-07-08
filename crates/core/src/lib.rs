@@ -1,7 +1,7 @@
 //! `exub-core` — the provider-agnostic contract layer for exuberance.
 //!
 //! The product is meant to be **modular and vendor-neutral**: it should run on
-//! Polygon or another feed, execute through Tradier or Alpaca or IBKR, and reason
+//! Massive or another feed, execute through Tradier or Alpaca or IBKR, and reason
 //! with Claude or another model — without any of the trading logic knowing which.
 //! This crate is where that neutrality is defined. It holds nothing but traits
 //! and plain data types:

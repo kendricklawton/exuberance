@@ -1,7 +1,7 @@
 //! Market-data domain types and the [`MarketDataProvider`] contract.
 //!
 //! These are the value types every price feed speaks, plus the trait screeners
-//! depend on. The concrete feeds (mock, Polygon, and later others) live in the
+//! depend on. The concrete feeds (mock, Massive, and later others) live in the
 //! `market-data` crate and implement this trait — so `signals` never names a
 //! vendor, only the contract.
 
@@ -67,7 +67,7 @@ impl IvSnapshot {
 }
 
 /// Anything that can supply prices and IV. Screeners depend on this, not on a
-/// concrete vendor, so tests use a mock and prod uses Massive/Polygon, Alpha
+/// concrete vendor, so tests use a mock and prod uses Massive, Alpha
 /// Vantage, or any other feed.
 ///
 /// The methods are `async` because a real feed is a network round-trip;

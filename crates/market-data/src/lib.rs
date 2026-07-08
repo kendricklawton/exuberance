@@ -2,10 +2,10 @@
 //!
 //! The types and the [`MarketDataProvider`] contract live in `exub-core`; this
 //! crate supplies concrete feeds that implement it — [`MockSource`] for tests and
-//! demos, [`PolygonSource`] for live data (stub until the HTTP path lands). The
+//! demos, [`MassiveSource`] for live data (stub until the HTTP path lands). The
 //! core types are re-exported here so downstream crates can keep a single import.
 //!
-//! Live market data also reaches the AI agents through the `massive` and Polygon
+//! Live market data also reaches the AI agents through the `massive` and Massive
 //! **MCP tools**; this crate is the *Rust* path used by the compiled engine.
 
 use async_trait::async_trait;
@@ -103,27 +103,27 @@ impl MarketDataProvider for MockSource {
     }
 }
 
-/// Live Polygon.io data source. Skeleton only — HTTP wiring is the next
-/// milestone (see CLAUDE.md "Build order"). Reads `POLYGON_API_KEY` from env.
+/// Live Massive data source. Skeleton only — HTTP wiring is the next
+/// milestone (see CLAUDE.md "Build order"). Reads `MASSIVE_API_KEY` from env.
 #[derive(Debug, Clone)]
-pub struct PolygonSource {
+pub struct MassiveSource {
     #[allow(dead_code)]
     api_key: String,
 }
 
-impl PolygonSource {
-    /// Construct from the `POLYGON_API_KEY` environment variable.
+impl MassiveSource {
+    /// Construct from the `MASSIVE_API_KEY` environment variable.
     pub fn from_env() -> ProviderResult<Self> {
-        let api_key = std::env::var("POLYGON_API_KEY")
-            .map_err(|_| ProviderError::Auth("POLYGON_API_KEY not set".into()))?;
+        let api_key = std::env::var("MASSIVE_API_KEY")
+            .map_err(|_| ProviderError::Auth("MASSIVE_API_KEY not set".into()))?;
         Ok(Self { api_key })
     }
 }
 
-impl Provider for PolygonSource {
+impl Provider for MassiveSource {
     fn info(&self) -> ProviderInfo {
         ProviderInfo {
-            id: "polygon".into(),
+            id: "massive".into(),
             kind: ProviderKind::MarketData,
             capabilities: vec![
                 Capability::DailyBars,
@@ -137,15 +137,15 @@ impl Provider for PolygonSource {
 }
 
 #[async_trait]
-impl MarketDataProvider for PolygonSource {
+impl MarketDataProvider for MassiveSource {
     async fn daily_bars(&self, _symbol: &str, _lookback_days: usize) -> ProviderResult<Vec<Bar>> {
         // TODO: GET /v2/aggs/ticker/{symbol}/range/1/day/{from}/{to}
-        Err(ProviderError::NotImplemented("PolygonSource::daily_bars"))
+        Err(ProviderError::NotImplemented("MassiveSource::daily_bars"))
     }
 
     async fn iv_snapshot(&self, _symbol: &str) -> ProviderResult<IvSnapshot> {
         // TODO: pull ATM IV from the options snapshot endpoint + build history.
-        Err(ProviderError::NotImplemented("PolygonSource::iv_snapshot"))
+        Err(ProviderError::NotImplemented("MassiveSource::iv_snapshot"))
     }
 }
 

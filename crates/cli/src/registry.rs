@@ -1,7 +1,7 @@
 //! The adapter registry — the **one place** a data provider, AI model, or coding agent is named.
 //!
 //! This is what makes exuberance a pluggable, multi-vendor engine: the config resolves a *name*
-//! (`"mock"`, `"polygon"`, `"claude"`, `"claude-code"`, …) and the registry maps it to a boxed trait object
+//! (`"mock"`, `"massive"`, `"claude"`, `"claude-code"`, …) and the registry maps it to a boxed trait object
 //! the engine drives. Adding a vendor is a new adapter crate + one arm here — nothing in the core or the
 //! screens changes. The [`catalog`] lists every intended vendor and whether it's wired yet, so
 //! `exub providers` shows the plug-in matrix at a glance.
@@ -56,7 +56,7 @@ pub fn catalog() -> Vec<CatalogEntry> {
             note: "in-memory demo/test fixture",
         },
         CatalogEntry {
-            name: "polygon",
+            name: "massive",
             kind: MarketData,
             status: Planned,
             note: "Massive (formerly Polygon.io) — licensed feed; IV snapshot → accumulate history",
@@ -188,7 +188,7 @@ mod tests {
         let has =
             |name: &str, kind: ProviderKind| c.iter().any(|e| e.name == name && e.kind == kind);
         // The vendors the product targets are all present as plug-in points.
-        assert!(has("polygon", ProviderKind::MarketData));
+        assert!(has("massive", ProviderKind::MarketData));
         assert!(has("alpha-vantage", ProviderKind::MarketData));
         assert!(has("claude", ProviderKind::Ai));
         assert!(has("gemini", ProviderKind::Ai));
@@ -207,7 +207,7 @@ mod tests {
 
         // A catalogued-but-planned vendor is a clear error, not a silent fallback.
         // `.err()` (not `unwrap_err`) because the Ok type `Box<dyn MarketDataProvider>` isn't `Debug`.
-        let err = build_data_provider("polygon")
+        let err = build_data_provider("massive")
             .err()
             .expect("a planned provider must error")
             .to_string();
