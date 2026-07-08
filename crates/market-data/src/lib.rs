@@ -1,73 +1,19 @@
-//! Market-data layer for `exuberance`.
+//! Market-data **providers** for `exuberance`.
 //!
-//! One tested place to get prices and implied-vol snapshots. Everything is
-//! expressed against the [`DataSource`] trait so screeners never care whether
-//! the bytes came from Polygon, a mock, or (later) a cache.
+//! The types and the [`MarketDataProvider`] contract live in `exub-core`; this
+//! crate supplies concrete feeds that implement it — [`MockSource`] for tests and
+//! demos, [`PolygonSource`] for live data (stub until the HTTP path lands). The
+//! core types are re-exported here so downstream crates can keep a single import.
 //!
 //! Live market data also reaches the AI agents through the `massive` and Polygon
 //! **MCP tools**; this crate is the *Rust* path used by the compiled engine.
 
-/// A daily OHLCV bar. Timestamps are Unix epoch **seconds** (UTC, market close).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Bar {
-    pub t: i64,
-    pub open: f64,
-    pub high: f64,
-    pub low: f64,
-    pub close: f64,
-    pub volume: f64,
-}
+use async_trait::async_trait;
 
-/// An implied-volatility snapshot for a symbol, with enough history to rank it.
-///
-/// `iv` and each entry in `iv_history` are decimals (0.30 == 30% annualized),
-/// typically the ATM / 30-day implied vol.
-#[derive(Debug, Clone, PartialEq)]
-pub struct IvSnapshot {
-    pub symbol: String,
-    pub iv: f64,
-    /// Trailing IV observations (e.g. daily ATM IV over the last 1–3 years),
-    /// used to compute IV rank / percentile.
-    pub iv_history: Vec<f64>,
-}
-
-/// Errors a data source can return.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DataError {
-    /// Symbol not found by the provider.
-    NotFound(String),
-    /// Provider or transport failure (HTTP error, timeout, bad payload).
-    Provider(String),
-    /// Path not wired yet (e.g. live Polygon HTTP).
-    NotImplemented(&'static str),
-}
-
-impl std::fmt::Display for DataError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DataError::NotFound(s) => write!(f, "symbol not found: {s}"),
-            DataError::Provider(s) => write!(f, "provider error: {s}"),
-            DataError::NotImplemented(s) => write!(f, "not implemented yet: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for DataError {}
-
-/// Anything that can supply prices and IV. Screeners depend on this, not on a
-/// concrete provider, so tests use [`MockSource`] and prod uses Polygon.
-pub trait DataSource {
-    /// Daily bars, oldest-first, covering roughly `lookback_days` sessions.
-    fn daily_bars(&self, symbol: &str, lookback_days: usize) -> Result<Vec<Bar>, DataError>;
-
-    /// Current IV plus trailing history for the symbol.
-    fn iv_snapshot(&self, symbol: &str) -> Result<IvSnapshot, DataError>;
-}
-
-/// Convenience: pull the closing prices out of a bar series (oldest-first).
-pub fn closes(bars: &[Bar]) -> Vec<f64> {
-    bars.iter().map(|b| b.close).collect()
-}
+pub use exub_core::{
+    closes, Bar, Capability, IvSnapshot, MarketDataProvider, Provider, ProviderError, ProviderInfo,
+    ProviderKind, ProviderResult,
+};
 
 /// In-memory data source for tests, demos, and backtest fixtures.
 #[derive(Debug, Default, Clone)]
@@ -79,6 +25,35 @@ impl MockSource {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// A `MockSource` pre-seeded with a small demo universe — a proven mover at cheap IV (surfaces), a
+    /// sleepy name (fails the move gate), and a big mover at rich IV (fails on rank). Used by `exub scan`'s
+    /// demo path so the pipeline is visible before a live feed is wired, and by tests as a fixture.
+    pub fn demo() -> Self {
+        let mut src = Self::new();
+        src.insert_from_closes(
+            "MOVER",
+            &[100.0, 112.0, 98.5, 110.3, 99.3, 110.2],
+            0.22,
+            vec![0.18, 0.35, 0.52, 0.60],
+        );
+        src.insert_from_closes(
+            "SLEEPY",
+            &[100.0, 100.4, 100.1, 100.5, 100.2],
+            0.11,
+            vec![0.10, 0.45, 0.80],
+        );
+        src.insert_from_closes(
+            "PRICEY",
+            &[100.0, 112.0, 98.0, 111.0, 99.0],
+            0.58,
+            vec![0.15, 0.30, 0.60],
+        );
+        src
+    }
+
+    /// The tickers [`MockSource::demo`] seeds, in scan order.
+    pub const DEMO_UNIVERSE: [&'static str; 3] = ["MOVER", "SLEEPY", "PRICEY"];
 
     /// Register a symbol from raw closing prices and an IV snapshot. Bars are
     /// synthesized with `close == open == high == low` and sequential timestamps.
@@ -92,39 +67,39 @@ impl MockSource {
         let bars = closes
             .iter()
             .enumerate()
-            .map(|(i, &c)| Bar {
-                t: i as i64,
-                open: c,
-                high: c,
-                low: c,
-                close: c,
-                volume: 0.0,
-            })
+            .map(|(i, &c)| Bar::new(i as i64, c, c, c, c, 0.0))
             .collect();
-        let snap = IvSnapshot {
-            symbol: symbol.to_string(),
-            iv,
-            iv_history,
-        };
+        let snap = IvSnapshot::new(symbol, iv, iv_history);
         self.entries.insert(symbol.to_string(), (bars, snap));
     }
 }
 
-impl DataSource for MockSource {
-    fn daily_bars(&self, symbol: &str, lookback_days: usize) -> Result<Vec<Bar>, DataError> {
+impl Provider for MockSource {
+    fn info(&self) -> ProviderInfo {
+        ProviderInfo {
+            id: "mock".into(),
+            kind: ProviderKind::MarketData,
+            capabilities: vec![Capability::DailyBars, Capability::ImpliedVol],
+        }
+    }
+}
+
+#[async_trait]
+impl MarketDataProvider for MockSource {
+    async fn daily_bars(&self, symbol: &str, lookback_days: usize) -> ProviderResult<Vec<Bar>> {
         let (bars, _) = self
             .entries
             .get(symbol)
-            .ok_or_else(|| DataError::NotFound(symbol.to_string()))?;
+            .ok_or_else(|| ProviderError::NotFound(symbol.to_string()))?;
         let start = bars.len().saturating_sub(lookback_days);
         Ok(bars[start..].to_vec())
     }
 
-    fn iv_snapshot(&self, symbol: &str) -> Result<IvSnapshot, DataError> {
+    async fn iv_snapshot(&self, symbol: &str) -> ProviderResult<IvSnapshot> {
         self.entries
             .get(symbol)
             .map(|(_, snap)| snap.clone())
-            .ok_or_else(|| DataError::NotFound(symbol.to_string()))
+            .ok_or_else(|| ProviderError::NotFound(symbol.to_string()))
     }
 }
 
@@ -138,22 +113,39 @@ pub struct PolygonSource {
 
 impl PolygonSource {
     /// Construct from the `POLYGON_API_KEY` environment variable.
-    pub fn from_env() -> Result<Self, DataError> {
+    pub fn from_env() -> ProviderResult<Self> {
         let api_key = std::env::var("POLYGON_API_KEY")
-            .map_err(|_| DataError::Provider("POLYGON_API_KEY not set".into()))?;
+            .map_err(|_| ProviderError::Auth("POLYGON_API_KEY not set".into()))?;
         Ok(Self { api_key })
     }
 }
 
-impl DataSource for PolygonSource {
-    fn daily_bars(&self, _symbol: &str, _lookback_days: usize) -> Result<Vec<Bar>, DataError> {
+impl Provider for PolygonSource {
+    fn info(&self) -> ProviderInfo {
+        ProviderInfo {
+            id: "polygon".into(),
+            kind: ProviderKind::MarketData,
+            capabilities: vec![
+                Capability::DailyBars,
+                Capability::IntradayBars,
+                Capability::Quotes,
+                Capability::OptionsChain,
+                Capability::ImpliedVol,
+            ],
+        }
+    }
+}
+
+#[async_trait]
+impl MarketDataProvider for PolygonSource {
+    async fn daily_bars(&self, _symbol: &str, _lookback_days: usize) -> ProviderResult<Vec<Bar>> {
         // TODO: GET /v2/aggs/ticker/{symbol}/range/1/day/{from}/{to}
-        Err(DataError::NotImplemented("PolygonSource::daily_bars"))
+        Err(ProviderError::NotImplemented("PolygonSource::daily_bars"))
     }
 
-    fn iv_snapshot(&self, _symbol: &str) -> Result<IvSnapshot, DataError> {
+    async fn iv_snapshot(&self, _symbol: &str) -> ProviderResult<IvSnapshot> {
         // TODO: pull ATM IV from the options snapshot endpoint + build history.
-        Err(DataError::NotImplemented("PolygonSource::iv_snapshot"))
+        Err(ProviderError::NotImplemented("PolygonSource::iv_snapshot"))
     }
 }
 
@@ -161,26 +153,49 @@ impl DataSource for PolygonSource {
 mod tests {
     use super::*;
 
-    #[test]
-    fn mock_roundtrips_closes_and_iv() {
+    #[tokio::test]
+    async fn mock_roundtrips_closes_and_iv() {
         let mut src = MockSource::new();
         src.insert_from_closes("AAA", &[10.0, 11.0, 12.0], 0.25, vec![0.2, 0.3, 0.4]);
 
-        let bars = src.daily_bars("AAA", 100).unwrap();
+        let bars = src.daily_bars("AAA", 100).await.unwrap();
         assert_eq!(closes(&bars), vec![10.0, 11.0, 12.0]);
 
-        let snap = src.iv_snapshot("AAA").unwrap();
+        let snap = src.iv_snapshot("AAA").await.unwrap();
         assert_eq!(snap.iv, 0.25);
         assert_eq!(snap.iv_history.len(), 3);
 
-        assert_eq!(src.daily_bars("ZZZ", 10), Err(DataError::NotFound("ZZZ".into())));
+        assert_eq!(
+            src.daily_bars("ZZZ", 10).await,
+            Err(ProviderError::NotFound("ZZZ".into()))
+        );
+    }
+
+    #[tokio::test]
+    async fn lookback_truncates_to_most_recent() {
+        let mut src = MockSource::new();
+        src.insert_from_closes("BBB", &[1.0, 2.0, 3.0, 4.0, 5.0], 0.2, vec![]);
+        let bars = src.daily_bars("BBB", 2).await.unwrap();
+        assert_eq!(closes(&bars), vec![4.0, 5.0]);
+    }
+
+    #[tokio::test]
+    async fn demo_universe_is_seeded_and_scannable() {
+        let src = MockSource::demo();
+        for sym in MockSource::DEMO_UNIVERSE {
+            assert!(
+                src.daily_bars(sym, 100).await.is_ok(),
+                "{sym} should be seeded"
+            );
+        }
     }
 
     #[test]
-    fn lookback_truncates_to_most_recent() {
-        let mut src = MockSource::new();
-        src.insert_from_closes("BBB", &[1.0, 2.0, 3.0, 4.0, 5.0], 0.2, vec![]);
-        let bars = src.daily_bars("BBB", 2).unwrap();
-        assert_eq!(closes(&bars), vec![4.0, 5.0]);
+    fn mock_advertises_capabilities() {
+        let src = MockSource::new();
+        assert!(src.supports(Capability::DailyBars));
+        assert!(src.supports(Capability::ImpliedVol));
+        assert!(!src.supports(Capability::OptionsChain));
+        assert_eq!(src.info().kind, ProviderKind::MarketData);
     }
 }

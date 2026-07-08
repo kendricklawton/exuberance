@@ -17,10 +17,7 @@ pub fn log_returns(prices: &[f64]) -> Vec<f64> {
     if prices.len() < 2 {
         return Vec::new();
     }
-    prices
-        .windows(2)
-        .map(|w| (w[1] / w[0]).ln())
-        .collect()
+    prices.windows(2).map(|w| (w[1] / w[0]).ln()).collect()
 }
 
 /// Simple (arithmetic) returns from a price series: `p[i]/p[i-1] - 1`.

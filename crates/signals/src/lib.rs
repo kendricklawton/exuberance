@@ -1,11 +1,11 @@
 //! Screeners for `exuberance`.
 //!
 //! A screen turns raw market data into a pass/fail verdict plus the numbers that
-//! justify it. The flagship is [`CheapVolScreen`]: find names where implied vol
+//! justify it. The flagship is the cheap-vol screen ([`scan`]): find names where implied vol
 //! is cheap **for that name** and below what the stock has actually been doing,
 //! filtered to underlyings with a proven history of large moves.
 
-use market_data::{closes, DataError, DataSource};
+use exub_core::{closes, MarketDataProvider, ProviderError};
 
 /// Entry criteria for the cheap-vol / proven-mover setup.
 ///
@@ -38,8 +38,10 @@ impl Default for CheapVolCriteria {
     }
 }
 
-/// The computed evidence for one symbol against [`CheapVolCriteria`].
+/// The computed evidence for one symbol against [`CheapVolCriteria`]. A cited evidence record, not a
+/// verdict. `#[non_exhaustive]` so fields can be added (new metrics) without breaking downstream readers.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CheapVolResult {
     pub symbol: String,
     pub iv: f64,
@@ -57,13 +59,16 @@ pub struct CheapVolResult {
 }
 
 /// Evaluate a single symbol. Returns the full evidence, whether it passed or not.
-pub fn evaluate<S: DataSource>(
+///
+/// Generic over `?Sized` so it accepts both a concrete provider and a
+/// `&dyn MarketDataProvider` handed out by the runtime registry.
+pub async fn evaluate<S: MarketDataProvider + ?Sized>(
     source: &S,
     symbol: &str,
     c: &CheapVolCriteria,
-) -> Result<CheapVolResult, DataError> {
-    let bars = source.daily_bars(symbol, c.lookback_days)?;
-    let snap = source.iv_snapshot(symbol)?;
+) -> Result<CheapVolResult, ProviderError> {
+    let bars = source.daily_bars(symbol, c.lookback_days).await?;
+    let snap = source.iv_snapshot(symbol).await?;
     let prices = closes(&bars);
 
     let realized = vol::realized_vol_daily(&prices).unwrap_or(0.0);
@@ -113,16 +118,20 @@ pub fn evaluate<S: DataSource>(
 /// sorted most-underpriced first (most negative implied−realized spread).
 ///
 /// Symbols the data source can't serve are skipped (not fatal to the scan).
-pub fn scan<S: DataSource>(
+pub async fn scan<S: MarketDataProvider + ?Sized>(
     source: &S,
     universe: &[&str],
     c: &CheapVolCriteria,
 ) -> Vec<CheapVolResult> {
-    let mut hits: Vec<CheapVolResult> = universe
-        .iter()
-        .filter_map(|sym| evaluate(source, sym, c).ok())
-        .filter(|r| r.passed)
-        .collect();
+    let mut hits: Vec<CheapVolResult> = Vec::new();
+    for sym in universe {
+        // Symbols the source can't serve are skipped, not fatal to the scan.
+        if let Ok(r) = evaluate(source, sym, c).await {
+            if r.passed {
+                hits.push(r);
+            }
+        }
+    }
     hits.sort_by(|a, b| {
         a.implied_realized_spread
             .partial_cmp(&b.implied_realized_spread)
@@ -148,29 +157,24 @@ mod tests {
         p
     }
 
-    #[test]
-    fn cheap_vol_name_passes() {
+    #[tokio::test]
+    async fn cheap_vol_name_passes() {
         let mut src = MockSource::new();
         // IV of 20%, sitting near the bottom of a 15–60% history → low rank.
-        src.insert_from_closes(
-            "MOVER",
-            &mover_series(),
-            0.20,
-            vec![0.15, 0.30, 0.45, 0.60],
-        );
+        src.insert_from_closes("MOVER", &mover_series(), 0.20, vec![0.15, 0.30, 0.45, 0.60]);
         let c = CheapVolCriteria {
             lookback_days: 100,
             ..Default::default()
         };
-        let r = evaluate(&src, "MOVER", &c).unwrap();
+        let r = evaluate(&src, "MOVER", &c).await.unwrap();
         assert!(r.passed, "expected pass, reasons: {:?}", r.fail_reasons);
         assert!(r.iv_rank.unwrap() <= 0.20);
         assert!(r.realized_over_implied.unwrap() > 1.0);
         assert!(r.big_moves >= 2);
     }
 
-    #[test]
-    fn expensive_iv_fails_on_rank() {
+    #[tokio::test]
+    async fn expensive_iv_fails_on_rank() {
         let mut src = MockSource::new();
         // Same mover, but IV is pinned at the TOP of its history → high rank.
         src.insert_from_closes("MOVER", &mover_series(), 0.60, vec![0.15, 0.30, 0.60]);
@@ -178,13 +182,13 @@ mod tests {
             lookback_days: 100,
             ..Default::default()
         };
-        let r = evaluate(&src, "MOVER", &c).unwrap();
+        let r = evaluate(&src, "MOVER", &c).await.unwrap();
         assert!(!r.passed);
         assert!(r.fail_reasons.iter().any(|s| s.contains("IV rank")));
     }
 
-    #[test]
-    fn sleepy_stock_fails_on_moves() {
+    #[tokio::test]
+    async fn sleepy_stock_fails_on_moves() {
         let mut src = MockSource::new();
         // Cheap IV rank, but the stock barely moves → fails the proven-mover gate.
         src.insert_from_closes(
@@ -197,13 +201,13 @@ mod tests {
             lookback_days: 100,
             ..Default::default()
         };
-        let r = evaluate(&src, "SLEEPY", &c).unwrap();
+        let r = evaluate(&src, "SLEEPY", &c).await.unwrap();
         assert!(!r.passed);
         assert!(r.fail_reasons.iter().any(|s| s.contains("big moves")));
     }
 
-    #[test]
-    fn scan_returns_only_passers_sorted() {
+    #[tokio::test]
+    async fn scan_returns_only_passers_sorted() {
         let mut src = MockSource::new();
         src.insert_from_closes("MOVER", &mover_series(), 0.20, vec![0.15, 0.60]);
         src.insert_from_closes("SLEEPY", &[100.0, 100.5, 100.2], 0.10, vec![0.10, 0.80]);
@@ -211,7 +215,7 @@ mod tests {
             lookback_days: 100,
             ..Default::default()
         };
-        let hits = scan(&src, &["MOVER", "SLEEPY", "MISSING"], &c);
+        let hits = scan(&src, &["MOVER", "SLEEPY", "MISSING"], &c).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].symbol, "MOVER");
     }

@@ -1,0 +1,89 @@
+# CI — fmt, clippy, build, test, docs, and supply-chain. Needs no network or API keys: tests drive the mock
+# adapters, so the whole pipeline runs offline on a stock runner. Mirror it locally with `cargo xtask ci`.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Faster, less disk on the runner (incremental caching buys nothing for a clean CI build).
+  CARGO_INCREMENTAL: 0
+  # Deny compiler warnings on build/test too, not just clippy. Dependency warnings are `--cap-lints` capped
+  # by cargo, so only our own crates are held to this — keeping CI == the local `xtask ci` gate.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: build · lint · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the pinned toolchain
+        run: rustup component add rustfmt clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      # --locked everywhere: build from the committed Cargo.lock, so a stale lock fails CI instead of
+      # surfacing at release time.
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Test (offline — mock adapters, no API keys)
+        run: cargo test --all-features --locked
+
+      # Docs are a shipped surface: broken/redundant intra-doc links fail here, not silently on the
+      # published docs.
+      - name: Docs
+        run: cargo doc --no-deps --workspace --all-features --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  features:
+    name: feature matrix
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+      # Every feature combination (and --no-default-features) must compile — guards the future feature-gated
+      # adapters. No --locked here: --no-dev-deps rewrites the manifests, which would force a lock update
+      # that --locked forbids. Lock freshness is already gated by the check job.
+      - name: Check the feature powerset
+        run: cargo hack --feature-powerset --no-dev-deps check --workspace
+
+  deny:
+    name: supply chain (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  # The single check to require in branch protection. Green only if every job above succeeded or was
+  # skipped — add a job above and it's covered here automatically, no branch-rule edit needed.
+  ci-status:
+    name: CI status
+    if: always()
+    needs: [check, features, deny]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every job passed
+        run: jq --exit-status 'all(.result == "success" or .result == "skipped")' <<< '${{ toJson(needs) }}'

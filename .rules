@@ -1,0 +1,136 @@
+# exuberance
+
+A trading + AI cockpit for a discretionary options/volatility trader. A Rust
+engine with a **pluggable AI layer** — model + coding-agent adapters behind one
+trait, and an MCP surface — not a set of tool-specific personas. This file is the
+operating manual — read it every session.
+
+**What it is, in one line: a grounded trade-*discovery* engine. It helps you
+*find* trades — it never recommends them and never acts.** The engine surfaces
+candidates and the evidence that justifies them, each grounded in real data and
+cited; *you* decide and place the trade. This is decision **support**, not advice,
+and not autonomous execution. See `ROADMAP.md` for the architecture and plan.
+
+**Why this engine exists (vs. Massive's MCP).** Massive already ships an MCP
+server that hands an agent raw data, so raw *access* is not the reason to exist —
+the value is what we compute on top and cite. Three load-bearing differentiators:
+(1) the **edge is a deterministic computation** (IV rank, realized/implied,
+move-counting) that an LLM can't be trusted to eyeball — the engine authors the
+number and cites its inputs, the model never does; (2) **IV rank requires
+accumulated 1–3yr IV history** that no snapshot call returns — the engine's job is
+to persist that state, so the core signal is only computable *because* the engine
+exists; (3) the engine then becomes a **higher-order MCP** exposing *grounded,
+cited signals* (not raw data) to Claude Code / Gemini CLI / Codex. If a change
+makes the engine a thin passthrough to a vendor's data, it has lost its reason to
+exist — push the value into computation, state, and citation.
+
+## What we're trading
+
+**The edge: cheap volatility on proven movers.** We hunt options where implied
+volatility is underpricing future movement — a positive *variance risk premium*
+for the buyer. Concretely, a name qualifies when:
+
+- **IV rank is low** — today's implied vol sits near the bottom of its *own*
+  1–3yr range. (An absolute "IV < 30" is meaningless without this; 30 is cheap
+  for a biotech, rich for a utility.)
+- **Implied < realized** — options imply less movement than the stock has
+  actually been delivering (`realized/implied ≥ 1`).
+- **Proven mover** — the underlying has made multiple large (≥10%) moves over
+  the lookback, so the cheap IV is a genuine mispricing, not a permanently
+  sleepy stock.
+
+Desk shorthand for the setup: *"vol is cheap / options are underpricing the move."*
+This is a **long-vol / long-gamma** posture. We are option **buyers** here.
+
+Vocabulary we use precisely: *entry criteria / setup* (the rule checklist),
+*screen* (the mechanical filter), *investment thesis* (why one specific trade
+makes money — distinct from the reusable screen), *mandate* (what we're allowed
+to trade at all).
+
+## Repo layout
+
+The engine is **provider-agnostic**: trading logic depends on traits in
+`exub-core`, never a vendor. Swapping a data feed, broker, or AI model is adding
+a crate that implements a trait — not editing the engine. Full plan in `ROADMAP.md`.
+
+```
+crates/
+  core/         `exub-core` — provider-agnostic contracts. Provider/Capability, ProviderError, and the
+                MarketDataProvider/BrokerProvider/AiProvider traits + mock/paper/echo reference impls. No deps.
+  vol/          Pure vol math — realized vol, IV rank/percentile, spread, moves. Fully tested, no deps.
+  market-data/  Market-data providers implementing core's trait; MockSource (tests) + PolygonSource (stub).
+  signals/      Screeners over any MarketDataProvider. CheapVolScreen is the flagship.
+  cli/          `exub` binary. `exub scan` runs the screen; `exub providers` lists wired providers.
+xtask/        Dev orchestration — `cargo xtask ci` runs the full local gate. Never shipped.
+```
+
+## Data sources
+
+- **Polygon.io** — the Rust engine's live data path (`PolygonSource`, reads
+  `POLYGON_API_KEY`). REST aggregates for bars; options snapshot for IV. Not
+  wired yet — it's the next milestone.
+- **`massive` MCP tools** — live market data available in the Claude Code dev
+  environment (quotes, chains, IVs, historicals). Use `search_endpoints` then
+  `call_api` for any ad-hoc market/price/options lookup while developing —
+  **never web search for financial data.** (This is an *upstream data tool*,
+  distinct from the engine's own future MCP *surface*, which exposes grounded,
+  cited signals rather than raw data — see the AI layer below.)
+
+## The AI layer (in the engine, not a harness)
+
+The AI layer lives **inside the engine**, not as tool-specific personas:
+
+- **Model + agent adapters behind one seam.** Any LLM (Claude, Gemini, OpenAI) and
+  any coding agent (Claude Code, Gemini CLI, Codex) plug in behind `AiProvider`,
+  selected by config (ROADMAP Phase 16). The model *plans* a query; the **engine**
+  fetches + computes + cites the number, so a figure can't be hallucinated.
+- **Exposed via MCP.** The engine publishes its grounded discovery capabilities
+  (scan, evaluate, backtest) as an MCP tool-server (Phase 17), so any agentic
+  assistant calls *our* cited signals instead of crunching raw data itself.
+- **The desk process as a cited pipeline.** scan → research a name → write a thesis
+  → risk-check → adversarial review becomes a reproducible, logged, *cited* engine
+  pipeline (Phase 18) — harness-agnostic, part of the engine, not `.claude/` config.
+
+There are no bespoke subagents or slash-command skills: that Claude-Code-specific
+layer was dropped in favor of the in-engine AI layer above.
+
+## Guardrails (non-negotiable)
+
+This repo will eventually reach broker execution. Until then and after:
+
+1. **No live orders without an explicit human go.** Execution defaults to paper
+   (`EXUB_TRADING_MODE=paper`). Flipping to real money is a deliberate, manual
+   act — never inferred, never done by an agent on its own.
+2. **Never commit secrets.** Keys live in `.env` (gitignored). `.env.example`
+   documents the shape.
+3. **A risk check is in the loop for anything resembling a trade.** Position
+   sizing and mandate checks are mechanical and not optional — the in-code risk
+   engine (ROADMAP Phase 21) has veto.
+4. **Finds, never recommends — decision *support*, not advice.** This is the
+   load-bearing principle, not a footnote. The engine *finds* trades:
+   it surfaces candidates and the evidence that justifies them (IV rank,
+   realized/implied, move history, catalysts), each grounded in fetched data and
+   cited. The engine — not an LLM — authors every figure, so a number can't be
+   hallucinated. Nothing here ever emits a "buy/sell" verdict, a recommendation,
+   or an autonomous action; the human weighs the evidence, decides, places the
+   trade, and owns the risk. If output starts to read as a recommendation rather
+   than cited evidence, that's a bug.
+
+## Conventions
+
+- **Rust**, edition 2021, workspace crates. Keep `vol`/`market-data`/`signals`
+  dependency-light so `cargo test --workspace` runs offline and fast.
+- Every new screen/metric ships with unit tests (see `vol` and `signals` for the
+  bar). Pure logic is tested against known inputs, not live data.
+- `cargo test --workspace` and `cargo clippy --workspace` must be green before
+  anything is considered done.
+- Money/vol values are **decimals** internally (0.30 == 30%); format to percent
+  only at the display edge.
+
+## Build order (roadmap)
+
+The phase-by-phase plan **with live status** is the single source of truth in
+**`ROADMAP.md`** (26 phases across six tracks). Don't duplicate phase status here —
+update the roadmap. In brief: the foundations, provider contracts, config/CI, async
+seams + registry, and schema/error hardening are in; live data feeds, the IV-history
+store, the in-engine AI layer + MCP surface, and guarded paper execution are ahead.

@@ -1,10 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/core",
     "crates/market-data",
     "crates/vol",
     "crates/signals",
-    "crates/exub-cli",
+    "crates/cli",
+    "xtask",
 ]
 
 [workspace.package]
@@ -13,7 +15,28 @@ license = "MIT"
 authors = ["k-henry <khe4r6@gmail.com>"]
 repository = "exuberance"
 
-# Keep the core crates dependency-free so `cargo test` runs offline and fast.
-# Heavier deps (reqwest/tokio/serde/clap) get added per-crate when we wire live
-# HTTP (Polygon) and broker execution — see CLAUDE.md "Build order".
+# Keep the *core* crates (vol/market-data/signals/core) dependency-free so
+# `cargo test` on them runs offline and fast. Heavier deps live at the edges: the
+# CLI (config/logging/arg-parsing) and `xtask` (dev orchestration) below. HTTP
+# stacks (reqwest/tokio) get added per-adapter behind features when live feeds and
+# broker execution land — see ROADMAP.md.
 [workspace.dependencies]
+anyhow = "1"
+# Async seams: the provider traits are `async` so real HTTP feeds/models don't block. `async-trait` keeps
+# them object-safe, so the engine can hold `Box<dyn MarketDataProvider>` / `Box<dyn AiProvider>` chosen at
+# runtime from config (the whole point of a pluggable, multi-vendor engine).
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt", "macros"] }
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+toml = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# No-panic discipline (Phase 6): a failed feed/model/broker call is a value (`Err`), never a crash.
+# `unwrap`/`expect` are denied outside tests; `clippy.toml` re-allows them in tests. These are clippy
+# restriction lints, enforced by the `clippy … -D warnings` step in CI and `cargo xtask ci`. Each crate
+# opts in with `[lints] workspace = true`.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

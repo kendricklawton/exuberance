@@ -3,10 +3,21 @@ name = "market-data"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
-description = "Market data types and the DataSource trait (Polygon REST + mocks)."
+publish = false
+description = "Market-data providers implementing exub-core's MarketDataProvider trait (mocks now; Massive/Polygon, Alpha Vantage next)."
 
 [dependencies]
-# Dependency-free for now. When we wire live Polygon HTTP we'll add:
-#   reqwest = { version = "0.12", features = ["json", "blocking"] }
+exub-core = { path = "../core" }
+# Async provider impls (the seams are `async`); `reqwest` joins here behind a feature when live HTTP lands.
+async-trait.workspace = true
+# When we wire live Polygon HTTP we'll add:
+#   reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 #   serde   = { version = "1", features = ["derive"] }
 # behind a `polygon-live` feature so the pure types stay offline-testable.
+
+[dev-dependencies]
+# A runtime to drive the async provider methods in `#[tokio::test]`.
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true

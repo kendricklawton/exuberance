@@ -1,0 +1,20 @@
+[package]
+name = "exub-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Provider-agnostic contracts for exuberance: market-data, broker, and AI provider traits + the shared domain types every provider speaks."
+
+[dependencies]
+# The one runtime-facing dep: `async-trait` makes the provider seams `async` while staying object-safe, so
+# the engine can hold `Box<dyn MarketDataProvider>` / `Box<dyn AiProvider>` selected at runtime. Otherwise
+# `core` stays contract-only — no HTTP, no serde; concrete providers pull those in their own crates.
+async-trait.workspace = true
+
+[dev-dependencies]
+# A runtime to drive the async trait methods in `#[tokio::test]`.
+tokio = { workspace = true, features = ["rt", "macros"] }
+
+[lints]
+workspace = true
