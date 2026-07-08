@@ -15,7 +15,7 @@ mod registry;
 use clap::{Parser, Subcommand};
 use exub_core::ProviderKind;
 use market_data::MockSource;
-use signals::{scan, CheapVolCriteria};
+use signals::{scan_with, CheapVolCriteria, CheapVolResult};
 
 #[derive(Parser)]
 #[command(
@@ -98,12 +98,22 @@ fn list_providers(cfg: &config::Config) {
     println!();
 
     print_group("market-data feeds", ProviderKind::MarketData);
-    print_group("ai models", ProviderKind::Ai);
-    print_group("ai coding agents", ProviderKind::Agent);
-    print_group("brokers (human-initiated execution)", ProviderKind::Broker);
+    print_group(
+        "ai models (dormant seam — agents connect over MCP)",
+        ProviderKind::Ai,
+    );
+    print_group(
+        "ai coding agents (dormant seam — they connect as MCP clients)",
+        ProviderKind::Agent,
+    );
+    print_group(
+        "brokers (dormant seam — the engine places no orders)",
+        ProviderKind::Broker,
+    );
 
     println!(
-        "\nadd a vendor = a new adapter + one registry arm; the engine only ever sees the trait."
+        "\nadd a data feed = a new adapter + one registry arm; the engine only ever sees the trait.\n\
+         dormant entries document seams no phase wires (see the ROADMAP tombstones)."
     );
 }
 
@@ -119,6 +129,11 @@ fn print_group(title: &str, kind: ProviderKind) {
 /// Run the cheap-vol screen over the configured data provider. Today only `mock` is wired (a demo-seeded
 /// universe); selecting a planned feed returns an actionable error from the registry rather than a silent
 /// fallback. The output is cited evidence, not a recommendation.
+///
+/// Rows **stream** as each candidate is found (arrival order — the point once a slow real
+/// feed is scanning a big universe); the footer then names the most-underpriced hit from
+/// the sorted result, so the ranked answer survives streaming. A fully sortable/filterable
+/// view is `--json`'s job (ROADMAP P11.3), which stays atomic.
 async fn run_scan(cfg: &config::Config) -> anyhow::Result<()> {
     let source = registry::build_data_provider(&cfg.data_provider)?;
     let criteria = CheapVolCriteria {
@@ -126,37 +141,56 @@ async fn run_scan(cfg: &config::Config) -> anyhow::Result<()> {
         ..Default::default()
     };
     let universe = MockSource::DEMO_UNIVERSE;
-    let hits = scan(source.as_ref(), &universe, &criteria).await;
 
     println!(
-        "cheap-vol screen ({}) — {} candidate(s) from {} scanned\n",
+        "cheap-vol screen ({}) — scanning {} symbols, rows stream as found\n",
         cfg.data_provider,
-        hits.len(),
         universe.len()
     );
     println!(
         "{:<8} {:>6} {:>8} {:>8} {:>8} {:>7}",
         "SYMBOL", "IV", "IVrank", "RVol", "RV/IV", "moves"
     );
-    for r in &hits {
-        println!(
-            "{:<8} {:>5.0}% {:>8} {:>8} {:>8} {:>7}",
-            r.symbol,
-            r.iv * 100.0,
-            r.iv_rank
-                .map(|v| format!("{v:.2}"))
-                .unwrap_or_else(|| "-".into()),
-            r.realized_vol
-                .map(|v| format!("{:.0}%", v * 100.0))
-                .unwrap_or_else(|| "-".into()),
-            r.realized_over_implied
-                .map(|v| format!("{v:.2}"))
-                .unwrap_or_else(|| "-".into()),
-            r.big_moves,
-        );
+    let hits = scan_with(source.as_ref(), &universe, &criteria, print_hit_row).await;
+
+    println!(
+        "\n{} candidate(s) from {} scanned",
+        hits.len(),
+        universe.len()
+    );
+    if hits.len() > 1 {
+        // The sorted return ranks most-underpriced first; surface that answer even though
+        // the rows above streamed in arrival order.
+        if let (Some(best), Some(spread)) = (hits.first(), hits[0].implied_realized_spread) {
+            println!(
+                "most underpriced: {} (implied−realized {:+.0}%)",
+                best.symbol,
+                spread * 100.0
+            );
+        }
     }
     println!(
-        "\n(demo data — evidence only, not a recommendation; wire a live feed for real results)"
+        "(demo data — evidence only, not a recommendation; wire a live feed for real results)"
     );
     Ok(())
+}
+
+/// Print one evidence row of the streaming scan table. `-` marks a value the engine could
+/// not compute (never a fabricated zero).
+fn print_hit_row(r: &CheapVolResult) {
+    println!(
+        "{:<8} {:>5.0}% {:>8} {:>8} {:>8} {:>7}",
+        r.symbol,
+        r.iv * 100.0,
+        r.iv_rank
+            .map(|v| format!("{v:.2}"))
+            .unwrap_or_else(|| "-".into()),
+        r.realized_vol
+            .map(|v| format!("{:.0}%", v * 100.0))
+            .unwrap_or_else(|| "-".into()),
+        r.realized_over_implied
+            .map(|v| format!("{v:.2}"))
+            .unwrap_or_else(|| "-".into()),
+        r.big_moves,
+    );
 }

@@ -10,13 +10,17 @@ use anyhow::{bail, Result};
 use exub_core::{AiProvider, EchoAi, MarketDataProvider, ProviderKind};
 use market_data::MockSource;
 
-/// Whether a catalog entry is actually implemented, or planned on the roadmap.
+/// Whether a catalog entry is implemented, on the roadmap, or a dormant seam.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     /// Implemented and selectable today.
     Wired,
-    /// A named plug-in point that isn't implemented yet (see ROADMAP.md).
+    /// A named plug-in point on the active roadmap (see ROADMAP.md).
     Planned,
+    /// Documents a **dormant seam**: stays here so the seam's shape is visible, but no
+    /// phase wires it — permanently `dormant` unless explicitly re-scoped (see the ROADMAP
+    /// Phases 15–16 and 19–22 tombstones). Selecting one is an error that names the truth.
+    Dormant,
 }
 
 impl Status {
@@ -25,6 +29,7 @@ impl Status {
         match self {
             Status::Wired => "wired",
             Status::Planned => "planned",
+            Status::Dormant => "dormant",
         }
     }
 }
@@ -46,7 +51,7 @@ pub struct CatalogEntry {
 /// This is the menu `exub providers` renders; `build_*` below turns a wired name into a live adapter.
 pub fn catalog() -> Vec<CatalogEntry> {
     use ProviderKind::{Agent, Ai, Broker, MarketData};
-    use Status::{Planned, Wired};
+    use Status::{Dormant, Planned, Wired};
     vec![
         // Market-data feeds.
         CatalogEntry {
@@ -68,68 +73,70 @@ pub fn catalog() -> Vec<CatalogEntry> {
             note:
                 "Alpha Vantage — historical options w/ IV → backfill history (heavily rate-limited)",
         },
-        // AI models (raw completion APIs).
+        // AI models — a DORMANT seam: the engine never calls a model; agents connect over
+        // MCP with their own model + key (ROADMAP Phases 15–16 tombstone, Phase 17).
         CatalogEntry {
             name: "mock",
             kind: Ai,
             status: Wired,
-            note: "deterministic echo model (keyless)",
+            note: "deterministic echo model (keyless) — exercises the dormant seam",
         },
         CatalogEntry {
             name: "claude",
             kind: Ai,
-            status: Planned,
-            note: "Anthropic Claude (Messages API)",
+            status: Dormant,
+            note: "Anthropic Claude — not wired by design; connect via MCP (Phase 17)",
         },
         CatalogEntry {
             name: "gemini",
             kind: Ai,
-            status: Planned,
-            note: "Google Gemini (generateContent)",
+            status: Dormant,
+            note: "Google Gemini — not wired by design; connect via MCP (Phase 17)",
         },
         CatalogEntry {
             name: "openai",
             kind: Ai,
-            status: Planned,
-            note: "OpenAI (Chat Completions)",
+            status: Dormant,
+            note: "OpenAI — not wired by design; connect via MCP (Phase 17)",
         },
-        // AI coding agents (agentic CLIs) — same AiProvider seam, CodingAgent capability.
+        // AI coding agents — same dormant AiProvider seam; these connect as MCP *clients*.
         CatalogEntry {
             name: "claude-code",
             kind: Agent,
-            status: Planned,
-            note: "Anthropic Claude Code (agentic CLI)",
+            status: Dormant,
+            note: "Claude Code — connects as an MCP client, brings its own model",
         },
         CatalogEntry {
             name: "gemini-cli",
             kind: Agent,
-            status: Planned,
-            note: "Google Gemini CLI",
+            status: Dormant,
+            note: "Gemini CLI — connects as an MCP client, brings its own model",
         },
         CatalogEntry {
             name: "codex",
             kind: Agent,
-            status: Planned,
-            note: "OpenAI Codex CLI",
+            status: Dormant,
+            note: "OpenAI Codex — connects as an MCP client, brings its own model",
         },
-        // Brokers (human-initiated, paper-first execution — never the engine's job).
+        // Brokers — a DORMANT seam: execution is cut by design (Phases 19–22 tombstone);
+        // the engine places no orders. PaperBroker is the seam's inert reference mock.
         CatalogEntry {
             name: "paper",
             kind: Broker,
             status: Wired,
-            note: "no-network paper broker (default)",
+            note: "no-network paper mock — the dormant seam's inert reference impl",
         },
         CatalogEntry {
             name: "tradier",
             kind: Broker,
-            status: Planned,
-            note: "Tradier (paper + live)",
+            status: Dormant,
+            note: "Tradier — not wired by design; the engine places no orders",
         },
         CatalogEntry {
             name: "alpaca",
             kind: Broker,
-            status: Planned,
-            note: "Alpaca (paper + live)",
+            status: Dormant,
+            note: "Alpaca — not wired by design; the engine places no orders",
         },
     ]
 }
@@ -153,26 +160,28 @@ pub fn build_data_provider(name: &str) -> Result<Box<dyn MarketDataProvider>> {
         "mock" => Ok(Box::new(MockSource::demo())),
         other => bail!(
             "data provider '{other}' is not wired yet (available: {}). \
-             It's a planned plug-in point — see ROADMAP.md.",
+             Run `exub providers` to see the catalog; the wiring plan is in ROADMAP.md.",
             wired_names(ProviderKind::MarketData).join(", ")
         ),
     }
 }
 
-/// Resolve an AI adapter (model or coding agent) by name. `mock` returns the keyless echo provider.
-///
-/// The counterpart to [`build_data_provider`], ready for the AI-driven command (e.g. `ask`) that lands with
-/// the real model adapters — exercised by the registry tests today, hence `allow(dead_code)` until then.
+/// Resolve an AI adapter by name. `mock` returns the keyless echo provider — the only impl
+/// the **dormant** `AiProvider` seam will ever have unless in-engine model calls are
+/// explicitly re-scoped (ROADMAP Phases 15–16 tombstone). Kept so the seam stays exercised;
+/// `allow(dead_code)` because no production command drives it (by design).
 ///
 /// # Errors
-/// If `name` is unknown or catalogued-but-planned.
+/// If `name` is unknown or a dormant vendor — the message says the truth: agents connect
+/// over MCP, the engine never calls a model.
 #[allow(dead_code)]
 pub fn build_ai_provider(name: &str) -> Result<Box<dyn AiProvider>> {
     match name {
         "mock" => Ok(Box::new(EchoAi::new("echo", "echo-1"))),
         other => bail!(
-            "ai provider '{other}' is not wired yet (available: {}). \
-             It's a planned plug-in point — see ROADMAP.md.",
+            "ai provider '{other}' is not wired — by design, not yet: the engine never \
+             calls a model (available: {}). Agents connect over MCP and bring their own \
+             model (ROADMAP Phase 17). Run `exub providers` to see the catalog.",
             wired_names(ProviderKind::Ai).join(", ")
         ),
     }
@@ -198,6 +207,30 @@ mod tests {
         assert!(has("codex", ProviderKind::Agent));
     }
 
+    /// The catalog tells the truth about the re-scope: data feeds are the only `planned`
+    /// entries (an active roadmap); every AI-model / coding-agent / broker vendor is
+    /// `dormant` (the seams no phase wires — tombstones 15–16 and 19–22).
+    #[test]
+    fn dormant_seams_are_marked_dormant_not_planned() {
+        for e in catalog() {
+            match e.kind {
+                ProviderKind::MarketData => assert_ne!(
+                    e.status,
+                    Status::Dormant,
+                    "{} is a data feed — the active seam is never dormant",
+                    e.name
+                ),
+                _ => assert_ne!(
+                    e.status,
+                    Status::Planned,
+                    "{} rides a dormant seam — it must be wired (a mock) or dormant, \
+                     never 'planned' (nothing on the roadmap wires it)",
+                    e.name
+                ),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn build_resolves_mock_and_rejects_planned() {
         // The wired defaults build and actually work.
@@ -205,16 +238,23 @@ mod tests {
         assert!(data.daily_bars("MOVER", 100).await.is_ok());
         assert!(build_ai_provider("mock").is_ok());
 
-        // A catalogued-but-planned vendor is a clear error, not a silent fallback.
+        // A catalogued-but-planned vendor is a clear, actionable error, not a silent
+        // fallback: it names the alternatives AND the command that shows the catalog.
         // `.err()` (not `unwrap_err`) because the Ok type `Box<dyn MarketDataProvider>` isn't `Debug`.
         let err = build_data_provider("massive")
             .err()
             .expect("a planned provider must error")
             .to_string();
         assert!(
-            err.contains("not wired yet") && err.contains("mock"),
+            err.contains("not wired yet") && err.contains("mock") && err.contains("exub providers"),
             "{err}"
         );
-        assert!(build_ai_provider("claude").is_err());
+
+        // A dormant AI vendor errors with the truth: by design, MCP is the path.
+        let err = build_ai_provider("claude")
+            .err()
+            .expect("a dormant vendor must error")
+            .to_string();
+        assert!(err.contains("by design") && err.contains("MCP"), "{err}");
     }
 }

@@ -155,11 +155,19 @@ loop/adapters were cut in favor of MCP (see the Phases 15–16 tombstone). The
   anything is considered done.
 - Money/vol values are **decimals** internally (0.30 == 30%); format to percent
   only at the display edge.
+- **Git is human-driven.** The user makes every commit and push; the agent never
+  runs `git commit` / `git push` (or any other CI-triggering action). The agent's
+  job ends at: changes made, gate green, roadmap box checked in the working tree,
+  and — **only when asked** — a commit message drafted (imperative subject,
+  reference the P-ID, never an AI co-author/attribution trailer).
 
 ## Build order (roadmap)
 
 The phase-by-phase plan is the single source of truth in **`ROADMAP.md`** (26
 sequentially-gated phases; its **checkboxes are the state**). Work it per its §0.5
 agent loop: first unchecked box in ID order, verify-before-building, gate green,
-check the box in the same commit (`P8.2: …`), and never start a phase before the
-prior one's Exit gate passes. Don't duplicate phase status here — update the roadmap.
+and the box checked **together with the work** so they land in one commit
+(message references the ID, e.g. `P8.2: …`). The **user** makes that commit —
+the agent leaves the work + checked box staged in the tree and drafts the message
+on request. Never start a phase before the prior one's Exit gate passes. Don't
+duplicate phase status here — update the roadmap.

@@ -135,11 +135,31 @@ pub async fn scan<S: MarketDataProvider + ?Sized>(
     universe: &[&str],
     c: &CheapVolCriteria,
 ) -> Vec<CheapVolResult> {
+    scan_with(source, universe, c, |_| {}).await
+}
+
+/// [`scan`], streaming: `on_hit` fires for each **passing** symbol the moment it's found
+/// (universe/arrival order), so a surface can render results while a slow feed is still
+/// being scanned — the return value is still the full, sorted evidence set. This is the
+/// streaming seam (ROADMAP P5.4): it streams `Finding`s (evidence records), never model
+/// tokens, and a batch caller just passes an empty closure (that's exactly what [`scan`]
+/// does). Symbols the source can't serve are skipped, not fatal, and never reach `on_hit`.
+pub async fn scan_with<S, F>(
+    source: &S,
+    universe: &[&str],
+    c: &CheapVolCriteria,
+    mut on_hit: F,
+) -> Vec<CheapVolResult>
+where
+    S: MarketDataProvider + ?Sized,
+    F: FnMut(&CheapVolResult),
+{
     let mut hits: Vec<CheapVolResult> = Vec::new();
     for sym in universe {
         // Symbols the source can't serve are skipped, not fatal to the scan.
         if let Ok(r) = evaluate(source, sym, c).await {
             if r.passed {
+                on_hit(&r);
                 hits.push(r);
             }
         }
@@ -289,6 +309,33 @@ mod tests {
         assert!(
             hits[0].implied_realized_spread.unwrap() < hits[1].implied_realized_spread.unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn scan_with_streams_in_arrival_order_and_returns_sorted() {
+        let mut src = MockSource::new();
+        // MILD arrives first in the universe but DEEP is more underpriced (lower IV,
+        // same realized) — so arrival order and sorted order must differ.
+        src.insert_from_closes("DEEP", &mover_series(), 0.18, vec![0.15, 0.60]);
+        src.insert_from_closes("MILD", &mover_series(), 0.22, vec![0.20, 0.80]);
+        src.insert_from_closes("SLEEPY", &[100.0, 100.2, 100.1], 0.10, vec![0.10, 0.80]);
+        let c = CheapVolCriteria {
+            lookback_days: 100,
+            ..Default::default()
+        };
+
+        let mut streamed: Vec<String> = Vec::new();
+        let hits = scan_with(&src, &["MILD", "SLEEPY", "MISSING", "DEEP"], &c, |r| {
+            streamed.push(r.symbol.clone());
+        })
+        .await;
+
+        // Streamed in arrival order; failures (SLEEPY) and unservable symbols (MISSING)
+        // never reach the callback.
+        assert_eq!(streamed, vec!["MILD", "DEEP"]);
+        // The returned evidence set is still sorted most-underpriced first.
+        let returned: Vec<&str> = hits.iter().map(|r| r.symbol.as_str()).collect();
+        assert_eq!(returned, vec!["DEEP", "MILD"]);
     }
 
     #[tokio::test]

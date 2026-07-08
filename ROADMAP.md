@@ -187,18 +187,18 @@ API keys · the precedence tests pin flags > env > file > defaults.
 Goal: the irreversible shape decision — async seams and the runtime registry — made while
 mock-only (cheap now, expensive after a live adapter exists).
 
-- [ ] **P5.1** All three seams `async` (`async-trait`, driven by `tokio`); the engine holds
+- [x] **P5.1** All three seams `async` (`async-trait`, driven by `tokio`); the engine holds
       `Box<dyn MarketDataProvider>` / `Box<dyn AiProvider>` selected at runtime; `signals`
       is generic over `S: MarketDataProvider + ?Sized` so it screens over a `&dyn` from the
       registry.
-- [ ] **P5.2** The **registry** — the one place a vendor is named: config name → boxed
+- [x] **P5.2** The **registry** — the one place a vendor is named: config name → boxed
       adapter (`build_data_provider` / `build_ai_provider`); selecting a planned-but-unwired
       vendor is a clear, actionable error, never a silent fallback.
-- [ ] **P5.3** The plug-in **catalog** (`exub providers`): every intended data feed with
+- [x] **P5.3** The plug-in **catalog** (`exub providers`): every intended data feed with
       wired/planned status. The AI-model / coding-agent / broker entries document the
       **dormant seams** — permanently `planned` unless explicitly re-scoped (see the
       Phase 15–16 and 19–22 tombstones); agents connect over MCP instead.
-- [ ] **P5.4** Stream scan results to the surface as they're found (useful once real feeds
+- [x] **P5.4** Stream scan results to the surface as they're found (useful once real feeds
       make a universe scan slow); `--json` stays atomic. Streams `Finding`s, never model
       tokens.
 
