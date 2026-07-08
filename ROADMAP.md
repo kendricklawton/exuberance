@@ -177,7 +177,7 @@ the gate instead of relitigating discipline by hand.
 - [x] **P4.3** `cargo xtask ci` — the local gate: fmt · clippy `-D warnings` · build · test ·
       docs (`RUSTDOCFLAGS=-D warnings`) · feature powerset (`cargo-hack`) · `cargo-deny`,
       with `RUSTFLAGS=-D warnings` on every step, stopping at the first failure. Keyless.
-- [ ] **P4.4** A GitHub Actions workflow mirroring the gate step-for-step, plus one
+- [x] **P4.4** A GitHub Actions workflow mirroring the gate step-for-step, plus one
       aggregate required status check so branch protection needs a single rule.
 
 **Exit gate:** all P4 boxes checked · `cargo xtask ci` green locally **and** in CI with no
