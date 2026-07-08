@@ -42,6 +42,46 @@ impl Bar {
     }
 }
 
+/// A single dated implied-vol observation — one day's ATM IV. The unit the store persists and
+/// a backfill feed returns. `date_days` is days since the Unix epoch (UTC).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct IvObservation {
+    pub date_days: i64,
+    pub iv: f64,
+}
+
+impl IvObservation {
+    /// Build an observation.
+    #[must_use]
+    pub fn new(date_days: i64, iv: f64) -> Self {
+        Self { date_days, iv }
+    }
+}
+
+/// Provenance for an assembled IV history — what backed the rank, so grounded output can cite
+/// it (Phase 8). `observations` is the count, `span_days` the first→last date spread, `source`
+/// how it was assembled (e.g. `"accumulated (massive)"`, `"backfilled (alpha-vantage)"`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct IvHistoryMeta {
+    pub observations: usize,
+    pub span_days: i64,
+    pub source: String,
+}
+
+impl IvHistoryMeta {
+    /// Build history provenance.
+    #[must_use]
+    pub fn new(observations: usize, span_days: i64, source: impl Into<String>) -> Self {
+        Self {
+            observations,
+            span_days,
+            source: source.into(),
+        }
+    }
+}
+
 /// An implied-volatility snapshot for a symbol, with enough history to rank it.
 ///
 /// `iv` and each entry in `iv_history` are decimals (0.30 == 30% annualized),
@@ -54,6 +94,9 @@ pub struct IvSnapshot {
     /// Trailing IV observations (e.g. daily ATM IV over the last 1–3 years),
     /// used to compute IV rank / percentile.
     pub iv_history: Vec<f64>,
+    /// Where `iv_history` came from, when it was assembled by the store layer (Phase 8).
+    /// `None` for a bare feed snapshot that carries its own inline history.
+    pub history: Option<IvHistoryMeta>,
 }
 
 impl IvSnapshot {
@@ -64,7 +107,15 @@ impl IvSnapshot {
             symbol: symbol.into(),
             iv,
             iv_history,
+            history: None,
         }
+    }
+
+    /// Attach history provenance (the store layer sets this after assembling the distribution).
+    #[must_use]
+    pub fn with_history(mut self, meta: IvHistoryMeta) -> Self {
+        self.history = Some(meta);
+        self
     }
 }
 
@@ -82,6 +133,18 @@ pub trait MarketDataProvider: Provider {
 
     /// Current IV plus trailing history for the symbol.
     async fn iv_snapshot(&self, symbol: &str) -> ProviderResult<IvSnapshot>;
+
+    /// A **historical** daily ATM IV series for backfilling the distribution in one bounded
+    /// call — only feeds advertising [`Capability::OptionsHistory`] serve it. The default is
+    /// `ProviderError::Unsupported`, so snapshot-only feeds (which *accumulate* forward
+    /// instead) need not implement it. See [`iv_history_strategy`].
+    async fn iv_history(
+        &self,
+        _symbol: &str,
+        _lookback_days: usize,
+    ) -> ProviderResult<Vec<IvObservation>> {
+        Err(crate::ProviderError::Unsupported("iv_history"))
+    }
 }
 
 /// Convenience: pull the closing prices out of a bar series (oldest-first).

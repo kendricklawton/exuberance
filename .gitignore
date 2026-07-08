@@ -7,3 +7,7 @@
 /data/*.json
 /data/*.csv
 !/data/.gitkeep
+# persistent IV-history / journal stores (Phase 8) — local state, never committed
+*.db
+*.sqlite
+*.sqlite3

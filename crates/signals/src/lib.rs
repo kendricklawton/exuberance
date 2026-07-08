@@ -59,6 +59,13 @@ pub struct CheapVolResult {
     pub passed: bool,
     /// Human-readable reasons a symbol failed (empty when it passed).
     pub fail_reasons: Vec<String>,
+    /// How many IV observations backed the rank (the citation for `iv_rank`, Phase 8).
+    pub iv_history_len: usize,
+    /// First→last span of the IV history in days, when the store assembled it.
+    pub iv_history_span_days: Option<i64>,
+    /// How the IV history was assembled (e.g. `"accumulated (massive)"`); `None` for a bare
+    /// feed snapshot carrying its own inline history.
+    pub iv_source: Option<String>,
 }
 
 /// Evaluate a single symbol. Returns the full evidence, whether it passed or not.
@@ -83,6 +90,14 @@ pub async fn evaluate<S: MarketDataProvider + ?Sized>(
     let spread = realized.map(|rv| vol::implied_realized_spread(snap.iv, rv));
     let big_moves = vol::count_moves_over(&prices, c.big_move_threshold);
     let max_move = vol::max_abs_move(&prices).unwrap_or(0.0);
+
+    // IV-history provenance for grounded output (Phase 8): the count always, span/source only
+    // when the store layer assembled the distribution.
+    let iv_history_len = snap.iv_history.len();
+    let (iv_history_span_days, iv_source) = match &snap.history {
+        Some(m) => (Some(m.span_days), Some(m.source.clone())),
+        None => (None, None),
+    };
 
     let mut fail_reasons = Vec::new();
     match rank {
@@ -123,6 +138,9 @@ pub async fn evaluate<S: MarketDataProvider + ?Sized>(
         max_move,
         passed: fail_reasons.is_empty(),
         fail_reasons,
+        iv_history_len,
+        iv_history_span_days,
+        iv_source,
     })
 }
 
@@ -264,6 +282,30 @@ mod tests {
         let hits = scan(dyn_src, &["MOVER"], &c).await;
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].symbol, "MOVER");
+    }
+
+    #[tokio::test]
+    async fn store_backed_source_flows_iv_provenance() {
+        use exub_core::{MemoryIvStore, StoreBackedSource};
+        use std::sync::Arc;
+
+        // Wrapping the (Accumulate) mock in a store: the screen's evidence now cites the
+        // store-assembled history instead of the feed's inline one.
+        let mut mock = MockSource::new();
+        mock.insert_from_closes("MOVER", &mover_series(), 0.20, vec![0.15, 0.60]);
+        let src = StoreBackedSource::new(Box::new(mock), Arc::new(MemoryIvStore::new()))
+            .with_today_days(100);
+        let c = CheapVolCriteria {
+            lookback_days: 100,
+            ..Default::default()
+        };
+
+        let r = evaluate(&src, "MOVER", &c).await.unwrap();
+        // One run → one accumulated observation (rank needs a spanning range, so it's None).
+        assert_eq!(r.iv_history_len, 1);
+        assert_eq!(r.iv_history_span_days, Some(0));
+        assert!(r.iv_source.as_deref().unwrap().contains("accumulated"));
+        assert_eq!(r.iv_rank, None);
     }
 
     #[tokio::test]

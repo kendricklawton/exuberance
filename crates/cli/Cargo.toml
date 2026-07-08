@@ -11,16 +11,20 @@ name = "exub"
 path = "src/main.rs"
 
 [features]
-# The live Massive feed is wired by default — a fresh `exub` can hit a real key out of the box.
-# `--no-default-features` gives the lean, HTTP-free build (mock only).
-default = ["massive-live"]
+# The live Massive feed + the persistent SQLite store are wired by default — a fresh `exub`
+# hits a real key and accumulates IV history out of the box. `--no-default-features` gives the
+# lean build (mock feed, in-memory store, no HTTP/SQLite C compiled).
+default = ["massive-live", "sqlite"]
 massive-live = ["market-data/massive-live"]
+sqlite = ["dep:store"]
 
 [dependencies]
 exub-core = { path = "../core" }
 market-data = { path = "../market-data" }
 signals = { path = "../signals" }
 vol = { path = "../vol" }
+# The persistent IV-history store (Phase 8), only compiled under the `sqlite` feature.
+store = { path = "../store", optional = true }
 # The CLI is the composition root + surface, so the heavier deps live here (not in
 # the offline core crates): clap for args, serde/toml for the config file layer,
 # tracing for stderr logging, anyhow at the app boundary.

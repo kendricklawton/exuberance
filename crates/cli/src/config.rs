@@ -26,6 +26,10 @@ pub struct Config {
     pub trading_mode: String,
     /// The `tracing` filter directive (e.g. `"warn"`, `"debug"`, `"exub=debug"`).
     pub log: String,
+    /// Path to the persistent IV-history store (Phase 8). `None` → an ephemeral in-memory
+    /// store (the clean default demo); set it to accumulate IV across runs so `iv_rank`
+    /// becomes computable. Env `EXUB_STORE_PATH` / flag `--store`.
+    pub store_path: Option<String>,
 }
 
 impl Default for Config {
@@ -35,6 +39,7 @@ impl Default for Config {
             ai_provider: "mock".to_owned(),
             trading_mode: "paper".to_owned(),
             log: "warn".to_owned(),
+            store_path: None,
         }
     }
 }
@@ -52,6 +57,8 @@ pub struct Partial {
     pub trading_mode: Option<String>,
     /// Override the log filter.
     pub log: Option<String>,
+    /// Override the IV-history store path.
+    pub store_path: Option<String>,
 }
 
 impl Partial {
@@ -62,6 +69,7 @@ impl Partial {
             ai_provider: env_var("EXUB_AI_PROVIDER"),
             trading_mode: env_var("EXUB_TRADING_MODE"),
             log: env_var("EXUB_LOG"),
+            store_path: env_var("EXUB_STORE_PATH"),
         }
     }
 
@@ -78,6 +86,9 @@ impl Partial {
         }
         if let Some(v) = self.log {
             base.log = v;
+        }
+        if let Some(v) = self.store_path {
+            base.store_path = Some(v);
         }
     }
 }
@@ -134,6 +145,7 @@ mod tests {
             ai_provider: None,
             trading_mode: mode.map(str::to_owned),
             log: log.map(str::to_owned),
+            store_path: None,
         }
     }
 
@@ -173,6 +185,28 @@ mod tests {
         assert_eq!(c.data_provider, "mock");
         assert_eq!(c.trading_mode, "paper");
         assert_eq!(c.log, "debug");
+        // No store configured anywhere → ephemeral (the clean demo default).
+        assert_eq!(c.store_path, None);
+    }
+
+    #[test]
+    fn store_path_follows_precedence_and_defaults_to_none() {
+        // A file-layer store is overridden by a flag; absent everywhere it stays None.
+        let file = Partial {
+            store_path: Some("/file/iv.db".to_owned()),
+            ..Default::default()
+        };
+        let flags = Partial {
+            store_path: Some("/flag/iv.db".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve(file, Partial::default(), flags)
+                .store_path
+                .as_deref(),
+            Some("/flag/iv.db")
+        );
+        assert_eq!(Config::default().store_path, None);
     }
 
     #[test]

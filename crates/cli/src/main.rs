@@ -12,8 +12,10 @@ mod config;
 mod logging;
 mod registry;
 
+use std::sync::Arc;
+
 use clap::{Parser, Subcommand};
-use exub_core::ProviderKind;
+use exub_core::{IvStore, MarketDataProvider, ProviderKind, StoreBackedSource};
 use market_data::MockSource;
 use signals::{scan_with, CheapVolCriteria, CheapVolResult};
 
@@ -44,6 +46,11 @@ struct Cli {
     #[arg(long, global = true)]
     log: Option<String>,
 
+    /// Persistent IV-history store path. Also `EXUB_STORE_PATH`. Unset → an ephemeral
+    /// in-memory store; set it to accumulate IV across runs so `iv_rank` becomes computable.
+    #[arg(long, global = true, value_name = "PATH")]
+    store: Option<String>,
+
     /// Path to a TOML config file. Also `EXUB_CONFIG`.
     #[arg(long, global = true, value_name = "PATH")]
     config: Option<std::path::PathBuf>,
@@ -73,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
         ai_provider: cli.ai_provider,
         trading_mode: cli.trading_mode,
         log: cli.log,
+        store_path: cli.store,
     };
     let cfg = config::load(flags, cli.config.as_deref())?;
     logging::init(&cfg);
@@ -140,7 +148,14 @@ fn print_group(title: &str, kind: ProviderKind) {
 /// the sorted result, so the ranked answer survives streaming. A fully sortable/filterable
 /// view is `--json`'s job (ROADMAP P11.3), which stays atomic.
 async fn run_scan(cfg: &config::Config, symbols: Option<Vec<String>>) -> anyhow::Result<()> {
-    let source = registry::build_data_provider(&cfg.data_provider)?;
+    // The raw feed, then (when a store is configured) wrapped so its IV snapshot carries a
+    // persisted, ranked distribution — the anti-corruption layer: the screen is unchanged.
+    let base = registry::build_data_provider(&cfg.data_provider)?;
+    let source: Box<dyn MarketDataProvider> = match &cfg.store_path {
+        Some(path) => Box::new(StoreBackedSource::new(base, open_store(path)?)),
+        None => base,
+    };
+
     let criteria = CheapVolCriteria {
         lookback_days: 100,
         ..Default::default()
@@ -160,8 +175,8 @@ async fn run_scan(cfg: &config::Config, symbols: Option<Vec<String>>) -> anyhow:
         universe.len()
     );
     println!(
-        "{:<8} {:>6} {:>8} {:>8} {:>8} {:>7}",
-        "SYMBOL", "IV", "IVrank", "RVol", "RV/IV", "moves"
+        "{:<8} {:>6} {:>8} {:>8} {:>8} {:>7} {:>7}",
+        "SYMBOL", "IV", "IVrank", "RVol", "RV/IV", "moves", "IVhist"
     );
     let hits = scan_with(source.as_ref(), &universe, &criteria, print_hit_row).await;
 
@@ -181,17 +196,41 @@ async fn run_scan(cfg: &config::Config, symbols: Option<Vec<String>>) -> anyhow:
             );
         }
     }
+    // Cite where the IV history lives — the IVhist column is per-symbol observation counts.
+    match &cfg.store_path {
+        Some(path) => println!("IV history store: {path} (accumulates across runs)"),
+        None => println!(
+            "IV history: ephemeral (in-memory) — pass --store PATH to accumulate a rankable distribution"
+        ),
+    }
     println!(
         "(demo data — evidence only, not a recommendation; wire a live feed for real results)"
     );
     Ok(())
 }
 
+/// Open the configured IV-history store. With the `sqlite` feature (the default) this is a
+/// persistent [`store::SqliteStore`]; a lean build has no SQLite, so `--store` degrades to an
+/// ephemeral in-memory store with a warning (accumulates within a run, not across them).
+#[cfg(feature = "sqlite")]
+fn open_store(path: &str) -> anyhow::Result<Arc<dyn IvStore>> {
+    Ok(Arc::new(store::SqliteStore::open(path)?))
+}
+
+#[cfg(not(feature = "sqlite"))]
+fn open_store(path: &str) -> anyhow::Result<Arc<dyn IvStore>> {
+    tracing::warn!(
+        path,
+        "built without the `sqlite` feature — --store won't persist across runs; using an in-memory store"
+    );
+    Ok(Arc::new(exub_core::MemoryIvStore::new()))
+}
+
 /// Print one evidence row of the streaming scan table. `-` marks a value the engine could
 /// not compute (never a fabricated zero).
 fn print_hit_row(r: &CheapVolResult) {
     println!(
-        "{:<8} {:>5.0}% {:>8} {:>8} {:>8} {:>7}",
+        "{:<8} {:>5.0}% {:>8} {:>8} {:>8} {:>7} {:>7}",
         r.symbol,
         r.iv * 100.0,
         r.iv_rank
@@ -204,5 +243,7 @@ fn print_hit_row(r: &CheapVolResult) {
             .map(|v| format!("{v:.2}"))
             .unwrap_or_else(|| "-".into()),
         r.big_moves,
+        // How many IV observations backed this row's rank (the P8.3 citation).
+        r.iv_history_len,
     );
 }

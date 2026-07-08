@@ -82,9 +82,10 @@ and can swap or benchmark them head-to-head as better or cheaper ones appear. Se
 
 | Crate | Role |
 |-------|------|
-| `exub-core` | The contract layer: `Provider`/`Capability`, the unified `ProviderError`, and the `MarketDataProvider` / `BrokerProvider` / `AiProvider` seams + mock/paper/echo reference impls. Only dep: `async-trait`. |
+| `exub-core` | The contract layer: `Provider`/`Capability`, the unified `ProviderError`, the `MarketDataProvider` / `BrokerProvider` / `AiProvider` seams, and the `IvStore` seam + `StoreBackedSource` composition, plus mock/paper/echo reference impls. Only dep: `async-trait`. |
 | `vol` | Vol math for the flagship strategy: realized vol, IV rank/percentile, implied−realized spread, move detection. Fully tested, no deps. |
-| `market-data` | Market-data **providers** implementing `exub-core`'s trait. `MockSource` for tests, `MassiveSource` stub for live. |
+| `market-data` | Market-data **providers** implementing `exub-core`'s trait. `MockSource` for tests, `MassiveSource` for live Massive EOD data. |
+| `store` | Persistent **`IvStore`s** — `SqliteStore` accumulates daily ATM IV so `iv_rank` is computable across runs (the reason to exist). |
 | `signals` | Pluggable **strategies/screens** over any `MarketDataProvider`. Cheap-vol is the flagship reference strategy; others plug in behind the same seam. |
 | `cli` | The `exub` binary. `exub scan` runs the screen; `exub providers` lists the wired providers. |
 | `xtask` | Dev orchestration — `cargo xtask ci` runs the full local gate. Never shipped. |

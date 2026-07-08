@@ -81,6 +81,8 @@ crates/
                 dep: async-trait (for the async seams).
   vol/          Vol math for the flagship strategy — realized vol, IV rank/percentile, spread, moves. No deps.
   market-data/  Market-data providers implementing core's trait; MockSource (tests) + MassiveSource (stub).
+  store/        Persistent stores implementing core's IvStore — SqliteStore accumulates daily ATM IV so
+                iv_rank is computable across runs (Phase 8, the reason to exist). SQLite via rusqlite bundled.
   signals/      Pluggable strategies/screens over any MarketDataProvider. Cheap-vol is the flagship reference
                 strategy; more strategies (and other asset classes) plug in behind the same seam.
   cli/          `exub` binary. `exub scan` runs the screen; `exub providers` lists wired providers.

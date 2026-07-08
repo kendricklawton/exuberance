@@ -23,6 +23,7 @@ pub mod broker;
 pub mod error;
 pub mod market_data;
 pub mod provider;
+pub mod store;
 
 pub use ai::{AiProvider, Completion, EchoAi, Message, Prompt, Role};
 pub use broker::{
@@ -31,6 +32,8 @@ pub use broker::{
 };
 pub use error::{ProviderError, ProviderResult};
 pub use market_data::{
-    closes, iv_history_strategy, Bar, IvHistoryStrategy, IvSnapshot, MarketDataProvider,
+    closes, iv_history_strategy, Bar, IvHistoryMeta, IvHistoryStrategy, IvObservation, IvSnapshot,
+    MarketDataProvider,
 };
 pub use provider::{Capability, Provider, ProviderInfo, ProviderKind};
+pub use store::{today_days, IvStore, MemoryIvStore, StoreBackedSource};

@@ -266,21 +266,27 @@ Goal: **the reason to exist** (§0 keystone 3b). IV rank needs 1–3 years of tr
 no snapshot call returns; the engine persists it, making the flagship signal computable only
 because the engine exists. Prioritize this directly behind the first feed.
 
-- [ ] **P8.1** Acquisition is **capability-driven** via `Capability::OptionsHistory` + the
-      `iv_history_strategy` selector: a feed serving historical options-with-IV (e.g. Alpha
-      Vantage, ORATS) **backfills** the distribution in a bounded batch; a snapshot-only
-      feed (e.g. Massive) **accumulates forward**. The screen is identical either way — the
-      anti-corruption layer hides which feed filled the distribution.
-- [ ] **P8.2** (epic) A `Store` trait (SQLite default, in-memory for tests): persist daily
-      ATM IV per symbol; cache bars to respect rate limits; the same store later feeds the
-      journal (Phase 23).
-- [ ] **P8.3** Grounded output cites the exact history window used (span, observation
-      count, source), and `iv_rank` ranks against the real persisted distribution — not a
-      mock's.
+- [x] **P8.1** Acquisition is **capability-driven** via `Capability::OptionsHistory` + the
+      `iv_history_strategy` selector, composed as the `StoreBackedSource` **decorator**: a
+      feed serving historical options-with-IV (advertises `OptionsHistory`, implements the new
+      defaulted `MarketDataProvider::iv_history`) **backfills** the distribution in one bounded
+      call; a snapshot-only feed (Massive) **accumulates forward** one observation per run. The
+      screen is byte-for-byte identical either way — the decorator is the anti-corruption layer.
+- [x] **P8.2** A `Store` trait (`IvStore`, in-memory for tests/lean build) with a persistent
+      **SQLite** adapter (`crates/store`, `rusqlite` bundled — no system dep, offline build),
+      idempotent per `(symbol, date)`. Bar caching is **deferred to Phase 9** (its
+      caching/fan-out theme); this phase is IV persistence — the reason to exist. The same
+      store grows to feed the journal (Phase 23).
+- [x] **P8.3** Grounded output cites the history window — the `IVhist` column is the per-symbol
+      observation count, provenance (`span_days`, `source`) rides `CheapVolResult` for `--json`
+      (P11) — and `iv_rank` ranks against the real persisted distribution (via the store),
+      not a mock's inline seed.
 
-**Exit gate:** all P8 boxes checked · `cargo xtask ci` green · two consecutive scans
-accumulate IV into the store and the second cites a longer window; a backfill-capable feed
-fills a 1yr+ distribution in one bounded run.
+**Exit gate:** all P8 boxes checked · `cargo xtask ci` green · store tests prove two
+consecutive scans accumulate IV and the second cites a longer window (injected clock +
+tempfile SQLite persistence), and a backfill-capable feed fills a 1yr+ distribution in one
+bounded call. The live cross-day accumulation over a real feed (`exub scan --data-provider
+massive --store PATH`) is the human's to run.
 
 ## Phase 9 — Second feed + caching / fan-out
 Goal: prove the agnosticism claim with real second feeds — each chosen for the role it

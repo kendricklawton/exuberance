@@ -5,6 +5,7 @@ members = [
     "crates/market-data",
     "crates/vol",
     "crates/signals",
+    "crates/store",
     "crates/cli",
     "xtask",
 ]
@@ -39,6 +40,11 @@ serde_json = "1"
 secrecy = "0.10"
 # Dev-only: a local mock HTTP server for the offline contract tests (drift fails CI, not a live scan).
 wiremock = "0.6"
+# Persistent IV-history store (Phase 8), behind the cli `sqlite` feature. `bundled` vendors the
+# SQLite C amalgamation — no system libsqlite3, builds fully offline.
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Dev-only: temp files/dirs for the store's persistence test.
+tempfile = "3"
 
 # No-panic discipline (Phase 6): a failed feed/model/broker call is a value (`Err`), never a crash.
 # `unwrap`/`expect` are denied outside tests; `clippy.toml` re-allows them in tests. These are clippy
