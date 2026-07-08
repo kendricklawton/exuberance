@@ -15,6 +15,9 @@ async-trait.workspace = true
 [dev-dependencies]
 # A runtime to drive the async trait methods in `#[tokio::test]`.
 tokio = { workspace = true, features = ["rt", "macros"] }
+# Tests only: pins the `?`-interop the CLI relies on (ProviderError: std::error::Error →
+# anyhow::Error via the blanket From). Dev-deps don't leak — core stays contract-only.
+anyhow.workspace = true
 
 [lints]
 workspace = true

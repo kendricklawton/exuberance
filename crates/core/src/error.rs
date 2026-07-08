@@ -77,4 +77,51 @@ mod tests {
             "rate limited"
         );
     }
+
+    /// Every variant's message is part of the contract: these strings reach the user
+    /// (CLI stderr, fail_reasons context), so a rewording is a deliberate, test-visible act.
+    #[test]
+    fn every_variant_displays_a_clear_message() {
+        let cases = [
+            (ProviderError::NotFound("AAPL".into()), "not found: AAPL"),
+            (
+                ProviderError::Auth("MASSIVE_API_KEY not set".into()),
+                "auth error: MASSIVE_API_KEY not set",
+            ),
+            (
+                ProviderError::Transport("timeout".into()),
+                "transport error: timeout",
+            ),
+            (
+                ProviderError::Unsupported("options chain"),
+                "capability not supported: options chain",
+            ),
+            (
+                ProviderError::Refused("order quantity is zero".into()),
+                "refused by guardrail: order quantity is zero",
+            ),
+            (
+                ProviderError::NotImplemented("massive daily_bars"),
+                "not implemented yet: massive daily_bars",
+            ),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(err.to_string(), expected);
+        }
+    }
+
+    /// The CLI propagates provider failures with `?` into `anyhow::Result`; that interop
+    /// rides the `std::error::Error` impl. Pin it so removing the impl fails a test, not
+    /// a downstream build.
+    #[test]
+    fn question_mark_converts_into_anyhow() {
+        fn fails() -> anyhow::Result<()> {
+            Err(ProviderError::NotFound("XYZ".into()))?;
+            Ok(())
+        }
+        let err = fails().expect_err("must propagate");
+        assert_eq!(err.to_string(), "not found: XYZ");
+        // The original typed error is preserved in the chain, not stringified away.
+        assert!(err.downcast_ref::<ProviderError>().is_some());
+    }
 }

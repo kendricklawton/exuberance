@@ -149,7 +149,7 @@ vendor-specific anywhere.
       card + `ProviderKind` (MarketData / Broker / Ai / Agent) + the `Capability` vocabulary
       with `supports()` probing — screeners and the orchestrator branch on capability, never
       on a vendor name.
-- [ ] **P3.2** A unified `ProviderError` (NotFound / Auth / RateLimited / Transport /
+- [x] **P3.2** A unified `ProviderError` (NotFound / Auth / RateLimited / Transport /
       Unsupported / Refused / NotImplemented): every failed provider call is a typed value
       that degrades to a clear message.
 - [ ] **P3.3** The three I/O seams — `MarketDataProvider` (daily bars + IV snapshot; the
