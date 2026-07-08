@@ -123,7 +123,7 @@ before any live data exists.
       the full evidence record with human-readable `fail_reasons` (failure is a value, never
       a panic); `scan` returns only passers, sorted most-underpriced first, skipping symbols
       the source can't serve.
-- [ ] **P1.3** `exub scan` demo over a synthetic universe — cited evidence rendered
+- [x] **P1.3** `exub scan` demo over a synthetic universe — cited evidence rendered
       end-to-end, keyless and offline, framed as evidence-not-advice.
 
 **Exit gate:** all P1 boxes checked · `cargo xtask ci` green · `exub scan` renders the demo
