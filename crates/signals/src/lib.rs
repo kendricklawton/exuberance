@@ -46,11 +46,14 @@ pub struct CheapVolResult {
     pub symbol: String,
     pub iv: f64,
     pub iv_rank: Option<f64>,
-    pub realized_vol: f64,
+    /// Annualized realized vol. `None` when the price history is too short to compute it —
+    /// a value we can't compute is never reported as a fake zero.
+    pub realized_vol: Option<f64>,
     /// realized / implied. `> 1.0` means the stock moved more than options imply.
     pub realized_over_implied: Option<f64>,
-    /// implied − realized. Negative == options underpricing movement.
-    pub implied_realized_spread: f64,
+    /// implied − realized. Negative == options underpricing movement. `None` when realized
+    /// vol is not computable.
+    pub implied_realized_spread: Option<f64>,
     pub big_moves: usize,
     pub max_move: f64,
     pub passed: bool,
@@ -71,10 +74,13 @@ pub async fn evaluate<S: MarketDataProvider + ?Sized>(
     let snap = source.iv_snapshot(symbol).await?;
     let prices = closes(&bars);
 
-    let realized = vol::realized_vol_daily(&prices).unwrap_or(0.0);
+    // `None` when the history is too short — the evidence stays honest rather than
+    // reporting a fabricated 0.0 realized vol (grounded invariant: the engine authors
+    // the number, and a number it can't compute is `None`, never a fake).
+    let realized = vol::realized_vol_daily(&prices);
     let rank = vol::iv_rank(snap.iv, &snap.iv_history);
-    let roi = vol::realized_over_implied(realized, snap.iv);
-    let spread = vol::implied_realized_spread(snap.iv, realized);
+    let roi = realized.and_then(|rv| vol::realized_over_implied(rv, snap.iv));
+    let spread = realized.map(|rv| vol::implied_realized_spread(snap.iv, rv));
     let big_moves = vol::count_moves_over(&prices, c.big_move_threshold);
     let max_move = vol::max_abs_move(&prices).unwrap_or(0.0);
 
@@ -84,13 +90,19 @@ pub async fn evaluate<S: MarketDataProvider + ?Sized>(
         Some(r) => fail_reasons.push(format!("IV rank {r:.2} > max {:.2}", c.max_iv_rank)),
         None => fail_reasons.push("no IV history to rank".into()),
     }
-    match roi {
-        Some(r) if r >= c.min_realized_over_implied => {}
-        Some(r) => fail_reasons.push(format!(
+    match (realized, roi) {
+        // The honest reason: without realized vol there is no ratio to judge, so don't
+        // misattribute the failure to "realized/implied too low".
+        (None, _) => fail_reasons.push(format!(
+            "insufficient price history to compute realized vol ({} bars, need ≥ 3)",
+            bars.len()
+        )),
+        (Some(_), Some(r)) if r >= c.min_realized_over_implied => {}
+        (Some(_), Some(r)) => fail_reasons.push(format!(
             "realized/implied {r:.2} < min {:.2}",
             c.min_realized_over_implied
         )),
-        None => fail_reasons.push("implied vol non-positive".into()),
+        (Some(_), None) => fail_reasons.push("implied vol non-positive".into()),
     }
     if big_moves < c.min_big_moves {
         fail_reasons.push(format!(
@@ -132,10 +144,12 @@ pub async fn scan<S: MarketDataProvider + ?Sized>(
             }
         }
     }
+    // Passers always carry a spread (no realized vol → the roi criterion fails), but sort
+    // defensively: a `None` spread sinks to the end rather than panicking.
     hits.sort_by(|a, b| {
-        a.implied_realized_spread
-            .partial_cmp(&b.implied_realized_spread)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        let sa = a.implied_realized_spread.unwrap_or(f64::INFINITY);
+        let sb = b.implied_realized_spread.unwrap_or(f64::INFINITY);
+        sa.partial_cmp(&sb).unwrap_or(std::cmp::Ordering::Equal)
     });
     hits
 }
@@ -204,6 +218,51 @@ mod tests {
         let r = evaluate(&src, "SLEEPY", &c).await.unwrap();
         assert!(!r.passed);
         assert!(r.fail_reasons.iter().any(|s| s.contains("big moves")));
+    }
+
+    #[tokio::test]
+    async fn insufficient_history_fails_honestly() {
+        let mut src = MockSource::new();
+        // Two closes → one return → no sample std-dev → realized vol is not computable.
+        src.insert_from_closes("THIN", &[100.0, 105.0], 0.20, vec![0.15, 0.30, 0.60]);
+        let c = CheapVolCriteria {
+            lookback_days: 100,
+            ..Default::default()
+        };
+        let r = evaluate(&src, "THIN", &c).await.unwrap();
+        assert!(!r.passed);
+        // The un-computable values are honest `None`s, never fabricated zeros.
+        assert_eq!(r.realized_vol, None);
+        assert_eq!(r.implied_realized_spread, None);
+        assert_eq!(r.realized_over_implied, None);
+        // And the fail reason names the real cause, not a misattributed ratio failure.
+        assert!(r
+            .fail_reasons
+            .iter()
+            .any(|s| s.contains("insufficient price history")));
+        assert!(!r
+            .fail_reasons
+            .iter()
+            .any(|s| s.contains("realized/implied")));
+    }
+
+    #[tokio::test]
+    async fn scan_sorts_most_underpriced_first() {
+        let mut src = MockSource::new();
+        // Same mover series → same realized vol; DEEP's lower IV makes its
+        // implied−realized spread more negative, so it must sort first.
+        src.insert_from_closes("DEEP", &mover_series(), 0.18, vec![0.15, 0.60]);
+        src.insert_from_closes("MILD", &mover_series(), 0.22, vec![0.20, 0.80]);
+        let c = CheapVolCriteria {
+            lookback_days: 100,
+            ..Default::default()
+        };
+        let hits = scan(&src, &["MILD", "DEEP"], &c).await;
+        assert_eq!(hits.len(), 2, "both movers should pass");
+        assert_eq!(hits[0].symbol, "DEEP");
+        assert!(
+            hits[0].implied_realized_spread.unwrap() < hits[1].implied_realized_spread.unwrap()
+        );
     }
 
     #[tokio::test]

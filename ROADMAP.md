@@ -118,7 +118,7 @@ before any live data exists.
       realized vol, IV rank + IV percentile, implied−realized spread, realized/implied
       ratio, max-move + big-move counting. Deterministic, dependency-free, offline-testable;
       a known-answer test for every function.
-- [ ] **P1.2** The cheap-vol / proven-mover screen in `signals`, built over the market-data
+- [x] **P1.2** The cheap-vol / proven-mover screen in `signals`, built over the market-data
       trait *(formalized in Phase 3 — the two phases landed together)*: `evaluate` returns
       the full evidence record with human-readable `fail_reasons` (failure is a value, never
       a panic); `scan` returns only passers, sorted most-underpriced first, skipping symbols

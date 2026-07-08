@@ -140,13 +140,15 @@ async fn run_scan(cfg: &config::Config) -> anyhow::Result<()> {
     );
     for r in &hits {
         println!(
-            "{:<8} {:>5.0}% {:>8} {:>7.0}% {:>8} {:>7}",
+            "{:<8} {:>5.0}% {:>8} {:>8} {:>8} {:>7}",
             r.symbol,
             r.iv * 100.0,
             r.iv_rank
                 .map(|v| format!("{v:.2}"))
                 .unwrap_or_else(|| "-".into()),
-            r.realized_vol * 100.0,
+            r.realized_vol
+                .map(|v| format!("{:.0}%", v * 100.0))
+                .unwrap_or_else(|| "-".into()),
             r.realized_over_implied
                 .map(|v| format!("{v:.2}"))
                 .unwrap_or_else(|| "-".into()),
