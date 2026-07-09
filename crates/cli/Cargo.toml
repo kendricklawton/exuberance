@@ -12,7 +12,10 @@ name = "agent"
 path = "src/main.rs"
 
 [dependencies]
-agent-abi = { path = "../abi", features = ["mock"] }
+# The CLI now runs detectors as wasm artifacts through the host runtime (P3.4); it needs the
+# `Verdict` type to render, but no longer the native `mock` rule — that stays a test double.
+agent-abi = { path = "../abi" }
+agent-host = { path = "../host" }
 clap = { workspace = true }
 anyhow.workspace = true
 serde_json.workspace = true

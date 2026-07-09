@@ -150,21 +150,21 @@ detector fails the artifact-build step.
 Goal: the irreversible shape decision — the sandboxed execution environment every artifact
 runs in, made while mock-only (cheap now, expensive after real detectors exist).
 
-- [ ] **P3.1** wasmtime embedding: load + instantiate an ABI-conformant artifact; **fuel
+- [x] **P3.1** wasmtime embedding: load + instantiate an ABI-conformant artifact; **fuel
       metering** (bounded compute per call), **memory limits**, and **epoch interruption**
       (wall-clock kill switch) on every instantiation — a hostile or buggy artifact is a
       contained error, never a hang or a resource leak.
-- [ ] **P3.2** **Determinism enforced by absence:** the linker exposes *no* WASI clocks, no
+- [x] **P3.2** **Determinism enforced by absence:** the linker exposes *no* WASI clocks, no
       randomness, no network, no filesystem — an artifact that imports anything beyond the
       ABI fails to load with a clear typed error. A determinism test runs the same input 100×
       and asserts byte-identical verdicts; the **CI matrix** repeats it on a second OS/arch
       runner (the local gate is single-machine and can't — don't block on it locally).
-- [ ] **P3.3** Instance lifecycle for the hot path: pooled instantiation (or
+- [x] **P3.3** Instance lifecycle for the hot path: pooled instantiation (or
       instance-per-call — measure, then decide `(decision)`), pre-compiled module caching,
       and a micro-benchmark harness pinning **p99 per-call latency and cold-start budgets**
       as **generous absolute thresholds** the gate enforces (never run-to-run diffs — shared
       CI runners make relative perf comparisons flaky; a budget breach is red, noise is not).
-- [ ] **P3.4** `agent check` now runs the mock **through wasmtime** — the native-trait path
+- [x] **P3.4** `agent check` now runs the mock **through wasmtime** — the native-trait path
       from P1.5 stays as the test double; both must return identical verdicts (a golden test
       proves the seam is honest).
 

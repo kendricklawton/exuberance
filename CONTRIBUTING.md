@@ -23,10 +23,16 @@ wasmtime, at the edge, in a browser. **It detects and cites; it never decides.**
 git clone <repo> && cd <repo>
 cargo build
 
+# Build the detector artifacts first — `check` runs them as wasm through the host runtime:
+cargo xtask build-detectors
+
 # The mock detector is the keyless default — no keys, no network, no registry:
 cargo run -p agent-cli -- check --detector mock "text to scan"   # rendered Verdict
 cargo run -p agent-cli -- check --detector mock --json < file    # wire output; exit 1 = detection
 ```
+
+Point `check` at installed artifacts with `--config`, `AGENT_ARTIFACT_DIR`, or a config file;
+the default resolves from where `cargo xtask build-detectors` writes.
 
 Config is layered **flags > env (`AGENT_*`) > file (TOML) > defaults**. Exit codes
 are contract: `0` clean · `1` detection fired · `2`+ operational error.

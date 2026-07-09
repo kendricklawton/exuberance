@@ -1,9 +1,20 @@
 //! The `agent` kernel's host runtime.
 //!
-//! This crate will embed **wasmtime** to execute detector artifacts under fuel metering, memory
-//! limits, and epoch interruption, behind a deterministic import-free linker (no clocks, no
-//! randomness, no network, no filesystem) — ROADMAP Phase 3.
+//! [`WasmDetector`] embeds **wasmtime** to execute detector artifacts across the frozen ABI
+//! (`agent_abi::abi`), under a sandbox that makes a hostile or buggy artifact a contained
+//! [`HostError`], never a hang or a leak: **fuel** metering, a **memory** ceiling, and an
+//! **epoch** wall-clock kill switch on every instantiation (P3.1). The linker exposes nothing
+//! beyond the ABI — no clocks, no randomness, no network, no filesystem — so an artifact is
+//! deterministic and cannot phone home *because the imports are not there* (P3.2).
 //!
-//! It is an intentional placeholder until then: the Phase-1 pipeline runs the mock detector
-//! through the native `Detector` impl in `agent-abi`, so no runtime is required yet.
+//! *Detects and cites; never decides* — the host runs an artifact and returns its cited
+//! [`agent_abi::Verdict`]; policy lives in the embedding host, never here.
 #![forbid(unsafe_code)]
+
+mod error;
+mod runtime;
+
+pub use error::HostError;
+pub use runtime::{
+    Limits, WasmDetector, DEFAULT_FUEL, DEFAULT_MAX_MEMORY_BYTES, DEFAULT_WALL_BUDGET,
+};

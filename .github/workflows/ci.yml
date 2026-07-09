@@ -24,8 +24,16 @@ env:
 
 jobs:
   check:
-    name: build · lint · test
-    runs-on: ubuntu-latest
+    # Matrixed across two OS/arch so the P3.2 determinism test (same input → byte-identical
+    # verdict) is proven on a second target: ubuntu-latest is x86_64, macos-latest is ARM64.
+    # The local `cargo xtask ci` gate is single-machine and cannot do this — CI is where the
+    # cross-target check lives.
+    name: build · lint · test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - name: Install the pinned toolchain + wasm target

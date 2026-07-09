@@ -11,7 +11,6 @@ The prior project's decision log (the retired trading engine) was cleared with t
 2026-07-08 repurpose; its entries live in git history if ever needed.
 
 Decisions queued by the roadmap, to be recorded here as they're made:
-- **P3.3** — instance lifecycle on the hot path: pooling vs instance-per-call.
 - **P4.2** — PII locale scope for v0.
 - **P5.1** — inference approach inside the artifact (pure-Rust linear vs compiled inference
   lib; fixed-point vs float, with the cross-host determinism requirement).
@@ -58,3 +57,41 @@ the wasm (artifact) path run identical serialization code, byte-identical by con
 (verified through wasmtime in P3.4). The only `unsafe` in the project is each detector's small
 FFI shim (`alloc`/`detect` raw-pointer exports); the pure detection logic and framing stay in
 safe, `forbid(unsafe_code)` `agent-abi`.
+
+---
+
+## 002 — 2026-07-09 — P3.3: instance-per-call lifecycle over a cached module (not a pool)
+
+**Roadmap item:** P3.3.
+
+**Decision.** The host (`agent-host`) compiles each artifact to a wasmtime `Module` **once**, at
+load, and reuses it for every call; each `detect` runs in a **fresh `Store` (instance-per-call)**
+— a clean linear memory carrying its own fuel, memory ceiling, and epoch deadline (see P3.1).
+There is no instance pool. Budgets are pinned as generous absolute ceilings the gate enforces
+(`crates/host/tests/latency.rs`): cold start (one compile) ≤ 2 s, per-call p99 ≤ 10 ms — the mock
+runs orders of magnitude under both.
+
+**Alternative considered — a pooling allocator** (wasmtime's
+`InstanceAllocationStrategy::Pooling`): pre-allocated instance and memory slots to shave
+instantiation cost on a high-QPS hot path.
+
+**Why instance-per-call won — isolation + determinism + simplicity, at no measured cost.** The
+expensive step is *compilation*, and it is already paid once and cached in the `Module`; what
+remains per call is instantiation, which for a small core-wasm module is microseconds (p99 well
+under the 10 ms ceiling). A fresh store per call is the strongest isolation guarantee — no state
+can leak between calls, so determinism-by-absence (decision-adjacent, ROADMAP P3.2) holds
+trivially — and it avoids pool-exhaustion failure modes and tuning. Pooling buys throughput the
+kernel does not need yet and trades away that isolation simplicity.
+
+**Revisit trigger.** If a hot-path profile (a proxy embedding the SDK at high QPS — Phase 7+)
+shows per-call instantiation exceeding its budget, revisit pooling **additively**, behind the
+unchanged `WasmDetector` API, so no caller changes. Cross-process compiled-code caching
+(`Engine` cache / `Module::serialize`) is a separate additive lever for cold start if a
+process-per-invocation pattern ever needs it.
+
+**Consequences.** `WasmDetector` owns the `Engine`, the compiled `Module`, and the epoch ticker;
+`detect` allocates only a `Store` and an empty `Linker`. The compiler crates are built optimized
+even in the dev profile (`[profile.dev.package.cranelift-codegen]` / `regalloc2`), so the debug
+gate's cold-start measurement is realistic rather than an artifact of an unoptimized Cranelift. A
+regression that reintroduces per-call compilation, or loses the module cache, blows past the
+recorded budgets and fails the gate.

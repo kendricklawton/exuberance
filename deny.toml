@@ -10,12 +10,16 @@ yanked = "deny"
 version = 2
 # Minimal permissive set — only the licenses actually present in the tree today, so `cargo deny`
 # runs warning-clean. Add to this list deliberately (with a reason) when a new dependency needs
-# it: a missing license fails the gate and names the offending crate. (Phase 3's wasmtime tree
-# will bring a few more — e.g. BSD-2/3-Clause, ISC — added then, guided by the failure.)
+# it: a missing license fails the gate and names the offending crate.
 allow = [
     "MIT",
     "Apache-2.0",
     "Unicode-3.0",
+    # P3.1 wasmtime/cranelift tree: the Cranelift/regalloc2/pulley crates are Apache-2.0 with the
+    # standard LLVM linking exception (more permissive than plain Apache-2.0), and a few
+    # compression/support crates are Zlib. Both are permissive and compatible with Apache-2.0.
+    "Apache-2.0 WITH LLVM-exception",
+    "Zlib",
 ]
 confidence-threshold = 0.9
 
