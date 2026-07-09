@@ -1,41 +1,21 @@
 [package]
-name = "cli"
+name = "agent-cli"
 version = "0.1.0"
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 publish = false
-description = "exub — command-line entry point for the exuberance trading engine."
+description = "The `agent` CLI — detect on text and render cited Verdicts."
 
 [[bin]]
-name = "exub"
+name = "agent"
 path = "src/main.rs"
 
-[features]
-# The live Massive feed + the persistent SQLite store are wired by default — a fresh `exub`
-# hits a real key and accumulates IV history out of the box. `--no-default-features` gives the
-# lean build (mock feed, in-memory store, no HTTP/SQLite C compiled).
-default = ["massive-live", "sqlite"]
-massive-live = ["market-data/massive-live"]
-sqlite = ["dep:store"]
-
 [dependencies]
-exub-core = { path = "../core" }
-market-data = { path = "../market-data" }
-signals = { path = "../signals" }
-vol = { path = "../vol" }
-# The persistent IV-history store (Phase 8), only compiled under the `sqlite` feature.
-store = { path = "../store", optional = true }
-# The CLI is the composition root + surface, so the heavier deps live here (not in
-# the offline core crates): clap for args, serde/toml for the config file layer,
-# tracing for stderr logging, anyhow at the app boundary.
+agent-abi = { path = "../abi", features = ["mock"] }
+clap = { workspace = true }
 anyhow.workspace = true
-clap.workspace = true
-serde.workspace = true
-toml.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
-# The engine seams are async; the CLI drives one sequential command, so a current-thread runtime is plenty.
-tokio = { workspace = true, features = ["rt", "macros"] }
+serde_json.workspace = true
 
 [lints]
 workspace = true

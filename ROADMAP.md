@@ -94,26 +94,27 @@ Goal: the contract everything else implements, provable offline — a fresh work
 Detector ABI pinned as a spec, the `Verdict` wire type, and a mock artifact + CLI demo so
 the whole pipeline is visible end-to-end before any real model exists.
 
-- [ ] **P1.1** Fresh workspace scaffold: `crates/abi` (contract + `Verdict` types),
+- [x] **P1.1** Fresh workspace scaffold: `crates/abi` (contract + `Verdict` types),
       `crates/host` (runtime, Phase 3), `crates/cli`, `detectors/` (artifact sources),
-      `xtask`. The retired project's **code** — its `crates/*`, `data/`, `xtask`, and
-      manifests — is removed in this same step (the docs were already rewritten 2026-07-08);
-      the repo describes exactly one project again.
-- [ ] **P1.2** (decision) **ABI v0 shape:** WASM **component model (WIT)** vs plain core-wasm
+      `xtask`. The retired project's **code** — its `crates/*`, `data/`, and manifests —
+      is removed in this same step (the docs were already rewritten 2026-07-08); `xtask` is
+      **kept and retargeted** (its `ci()` gate is project-neutral). The repo describes exactly
+      one project again.
+- [x] **P1.2** (decision) **ABI v0 shape:** WASM **component model (WIT)** vs plain core-wasm
       exports (`alloc` / `detect(ptr,len) → ptr`). Decide for reach (browser + edge runtimes
       lag components) vs ergonomics (WIT typed interfaces); record the migration story for
       whichever loses. The ABI is versioned from day one (`abi_version` export).
-- [ ] **P1.3** Canonical **`Verdict`** in `crates/abi`: labels + scores + byte-offset spans +
+- [x] **P1.3** Canonical **`Verdict`** in `crates/abi`: labels + scores + byte-offset spans +
       provenance (detector id, semver, threshold, scorecard hash). `#[non_exhaustive]`,
       constructors, **serde-stable field naming** (explicit `rename_all`, additive-only
       evolution), and a round-trip test pinning the JSON shape — it will be serialized by
       the CLI, three SDKs, and a sidecar; a breaking wire change after hosts script against
       it is not cheap.
-- [ ] **P1.4** The **mock detector**: a trivial rules artifact (fixed keyword hits) built
+- [x] **P1.4** The **mock detector**: a trivial rules artifact (fixed keyword hits) built
       from `detectors/mock/` by `xtask` to whatever wasm target the P1.2 decision fixed
       (`wasm32-unknown-unknown` if core-wasm won), checked in as source (never as a binary
       blob). It is the permanent keyless fixture every later phase tests against.
-- [ ] **P1.5** `agent check --detector mock "some text"` — parses the text, returns a rendered
+- [x] **P1.5** `agent check --detector mock "some text"` — parses the text, returns a rendered
       `Verdict` (and `--json`), **without wasmtime yet**: the mock runs via a native
       `Detector` trait impl proving the abstraction before the runtime exists.
 

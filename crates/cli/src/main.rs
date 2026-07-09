@@ -1,249 +1,112 @@
-//! `exub` — the command-line face of the exuberance engine.
+//! The `agent` CLI — run a detector over text and print a cited `Verdict`.
 //!
-//! A grounded trade-*discovery* surface: it renders what the engine finds (cited candidates + evidence), it
-//! never recommends. This binary is the composition root — it resolves layered config, initializes stderr
-//! logging, then dispatches subcommands. Which data feed, AI model, or coding agent runs is **config, not
-//! code**: names resolve to adapters in the [registry]. `mock` is the keyless default until real vendors
-//! land (see ROADMAP.md).
-
+//! Phase 1 wires the `check` subcommand to the **native** mock detector — no wasmtime yet. The
+//! Phase-3 host swaps in a `WasmDetector` behind the same `agent_abi::Detector` trait, and this
+//! surface doesn't change. Exit codes are part of the wire contract: `0` clean, `1` a detection
+//! fired, `2` an operational error.
 #![forbid(unsafe_code)]
 
-mod config;
-mod logging;
-mod registry;
+use std::io::Read;
+use std::process::ExitCode;
 
-use std::sync::Arc;
-
+use agent_abi::{Detector, Verdict};
 use clap::{Parser, Subcommand};
-use exub_core::{IvStore, MarketDataProvider, ProviderKind, StoreBackedSource};
-use market_data::MockSource;
-use signals::{scan_with, CheapVolCriteria, CheapVolResult};
 
 #[derive(Parser)]
 #[command(
-    name = "exub",
-    version,
-    about = "Find trades, any market, any strategy — grounded, cited, never advised"
+    name = "agent",
+    about = "guardrail detection — detects and cites, never decides"
 )]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
-
-    /// Market-data adapter (default: `mock`). Also `EXUB_DATA_PROVIDER` / the config file.
-    #[arg(long, global = true, value_name = "NAME")]
-    data_provider: Option<String>,
-
-    /// AI adapter — model or coding agent (default: `mock`). Also `EXUB_AI_PROVIDER` / the config file.
-    #[arg(long, global = true, value_name = "NAME")]
-    ai_provider: Option<String>,
-
-    /// Execution mode: `paper` (default). Vestigial — the engine places no orders (see .rules
-    /// guardrail #1); kept for the dormant broker seam.
-    #[arg(long, global = true, value_name = "MODE")]
-    trading_mode: Option<String>,
-
-    /// Log filter, e.g. `debug` or `exub=debug` (default: `warn`). Also `EXUB_LOG`.
-    #[arg(long, global = true)]
-    log: Option<String>,
-
-    /// Persistent IV-history store path. Also `EXUB_STORE_PATH`. Unset → an ephemeral
-    /// in-memory store; set it to accumulate IV across runs so `iv_rank` becomes computable.
-    #[arg(long, global = true, value_name = "PATH")]
-    store: Option<String>,
-
-    /// Path to a TOML config file. Also `EXUB_CONFIG`.
-    #[arg(long, global = true, value_name = "PATH")]
-    config: Option<std::path::PathBuf>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Run the cheap-vol / proven-mover screen over the configured data provider.
-    Scan {
-        /// Comma-separated symbols to scan (e.g. `AAPL,TSLA,NVDA`). Defaults to the built-in
-        /// demo universe. Real universe input — index constituents, watchlists — is Phase 10.
-        #[arg(long, value_delimiter = ',', value_name = "SYM,…")]
-        symbols: Option<Vec<String>>,
-    },
-    /// List the plug-in catalog (data feeds, AI models, coding agents, brokers) + the configured selection.
-    Providers,
+    /// Run a detector over text (an argument, or stdin) and print a cited Verdict.
+    Check(CheckArgs),
 }
 
-// A single-thread runtime is plenty: the CLI issues one sequential command over the async seams.
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+#[derive(clap::Args)]
+struct CheckArgs {
+    /// Which detector to run. Only the keyless `mock` exists in Phase 1.
+    #[arg(long, default_value = "mock")]
+    detector: String,
+    /// Emit the Verdict as JSON on stdout (the wire contract) instead of a human summary.
+    #[arg(long)]
+    json: bool,
+    /// The text to scan. If omitted, read all of stdin.
+    text: Option<String>,
+}
 
-    // CLI flags are the top config layer; env (`EXUB_*`) and an optional TOML file sit under them.
-    let flags = config::Partial {
-        data_provider: cli.data_provider,
-        ai_provider: cli.ai_provider,
-        trading_mode: cli.trading_mode,
-        log: cli.log,
-        store_path: cli.store,
+fn main() -> ExitCode {
+    let result = match Cli::parse().cmd {
+        Cmd::Check(args) => run_check(args),
     };
-    let cfg = config::load(flags, cli.config.as_deref())?;
-    logging::init(&cfg);
-    tracing::debug!(
-        data_provider = %cfg.data_provider,
-        ai_provider = %cfg.ai_provider,
-        trading_mode = %cfg.trading_mode,
-        "exub: resolved config"
-    );
-
-    match cli.cmd {
-        Cmd::Scan { symbols } => run_scan(&cfg, symbols).await,
-        Cmd::Providers => {
-            list_providers(&cfg);
-            Ok(())
+    match result {
+        Ok(true) => ExitCode::from(1),  // a detection fired
+        Ok(false) => ExitCode::SUCCESS, // clean
+        Err(e) => {
+            eprintln!("agent: {e:#}");
+            ExitCode::from(2) // operational error
         }
     }
 }
 
-/// Render the plug-in catalog — every data feed, AI model, coding agent, and broker the engine can (or
-/// will) plug in — grouped by seam, plus the currently-configured selection. This is the pluggable,
-/// multi-vendor surface made visible: a wired name is selectable today, a planned one is a named slot.
-fn list_providers(cfg: &config::Config) {
-    println!("configured selection (flags > env > file > defaults):\n");
-    println!("  data provider   {}", cfg.data_provider);
-    println!("  ai provider     {}", cfg.ai_provider);
-    println!("  trading mode    {}", cfg.trading_mode);
-    println!();
-
-    print_group("market-data feeds", ProviderKind::MarketData);
-    print_group(
-        "ai models (dormant seam — agents connect over MCP)",
-        ProviderKind::Ai,
-    );
-    print_group(
-        "ai coding agents (dormant seam — they connect as MCP clients)",
-        ProviderKind::Agent,
-    );
-    print_group(
-        "brokers (dormant seam — the engine places no orders)",
-        ProviderKind::Broker,
-    );
-
-    println!(
-        "\nadd a data feed = a new adapter + one registry arm; the engine only ever sees the trait.\n\
-         dormant entries document seams no phase wires (see the ROADMAP tombstones)."
-    );
-}
-
-/// Print every catalog entry for one seam, aligned, tagged wired/planned.
-fn print_group(title: &str, kind: ProviderKind) {
-    println!("{title}:");
-    for e in registry::catalog().iter().filter(|e| e.kind == kind) {
-        println!("  [{:<7}] {:<14} {}", e.status.tag(), e.name, e.note);
-    }
-    println!();
-}
-
-/// Run the cheap-vol screen over the configured data provider. Today only `mock` is wired (a demo-seeded
-/// universe); selecting a planned feed returns an actionable error from the registry rather than a silent
-/// fallback. The output is cited evidence, not a recommendation.
-///
-/// Rows **stream** as each candidate is found (arrival order — the point once a slow real
-/// feed is scanning a big universe); the footer then names the most-underpriced hit from
-/// the sorted result, so the ranked answer survives streaming. A fully sortable/filterable
-/// view is `--json`'s job (ROADMAP P11.3), which stays atomic.
-async fn run_scan(cfg: &config::Config, symbols: Option<Vec<String>>) -> anyhow::Result<()> {
-    // The raw feed, then (when a store is configured) wrapped so its IV snapshot carries a
-    // persisted, ranked distribution — the anti-corruption layer: the screen is unchanged.
-    let base = registry::build_data_provider(&cfg.data_provider)?;
-    let source: Box<dyn MarketDataProvider> = match &cfg.store_path {
-        Some(path) => Box::new(StoreBackedSource::new(base, open_store(path)?)),
-        None => base,
-    };
-
-    let criteria = CheapVolCriteria {
-        lookback_days: 100,
-        ..Default::default()
-    };
-    // Explicit `--symbols`, else the built-in demo universe (real universe input is Phase 10).
-    let owned: Vec<String> = symbols.unwrap_or_else(|| {
-        MockSource::DEMO_UNIVERSE
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect()
-    });
-    let universe: Vec<&str> = owned.iter().map(String::as_str).collect();
-
-    println!(
-        "cheap-vol screen ({}) — scanning {} symbols, rows stream as found\n",
-        cfg.data_provider,
-        universe.len()
-    );
-    println!(
-        "{:<8} {:>6} {:>8} {:>8} {:>8} {:>7} {:>7}",
-        "SYMBOL", "IV", "IVrank", "RVol", "RV/IV", "moves", "IVhist"
-    );
-    let hits = scan_with(source.as_ref(), &universe, &criteria, print_hit_row).await;
-
-    println!(
-        "\n{} candidate(s) from {} scanned",
-        hits.len(),
-        universe.len()
-    );
-    if hits.len() > 1 {
-        // The sorted return ranks most-underpriced first; surface that answer even though
-        // the rows above streamed in arrival order.
-        if let (Some(best), Some(spread)) = (hits.first(), hits[0].implied_realized_spread) {
-            println!(
-                "most underpriced: {} (implied−realized {:+.0}%)",
-                best.symbol,
-                spread * 100.0
-            );
+/// Run `agent check`. Returns `Ok(true)` if the detector fired, `Ok(false)` if clean.
+fn run_check(args: CheckArgs) -> anyhow::Result<bool> {
+    let text = match args.text {
+        Some(t) => t,
+        None => {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
         }
+    };
+
+    let verdict = detect(&args.detector, &text)?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&verdict)?);
+    } else {
+        render(&verdict, &text);
     }
-    // Cite where the IV history lives — the IVhist column is per-symbol observation counts.
-    match &cfg.store_path {
-        Some(path) => println!("IV history store: {path} (accumulates across runs)"),
-        None => println!(
-            "IV history: ephemeral (in-memory) — pass --store PATH to accumulate a rankable distribution"
-        ),
+    Ok(verdict.fired())
+}
+
+/// Resolve a detector name to its `Detector` and run it. An unknown name is an operational
+/// error (exit 2), never a panic.
+fn detect(name: &str, text: &str) -> anyhow::Result<Verdict> {
+    match name {
+        "mock" => Ok(agent_abi::mock::MockDetector::new().detect(text)),
+        other => anyhow::bail!("unknown detector '{other}' (available: mock)"),
+    }
+}
+
+/// Human-readable render to stdout: a header plus one line per finding with its span, score,
+/// and the matched excerpt.
+fn render(verdict: &Verdict, text: &str) {
+    let p = &verdict.provenance;
+    if verdict.findings.is_empty() {
+        println!(
+            "clean — no findings ({} v{})",
+            p.detector_id, p.detector_version
+        );
+        return;
     }
     println!(
-        "(demo data — evidence only, not a recommendation; wire a live feed for real results)"
+        "{} finding(s) — {} v{}:",
+        verdict.findings.len(),
+        p.detector_id,
+        p.detector_version
     );
-    Ok(())
-}
-
-/// Open the configured IV-history store. With the `sqlite` feature (the default) this is a
-/// persistent [`store::SqliteStore`]; a lean build has no SQLite, so `--store` degrades to an
-/// ephemeral in-memory store with a warning (accumulates within a run, not across them).
-#[cfg(feature = "sqlite")]
-fn open_store(path: &str) -> anyhow::Result<Arc<dyn IvStore>> {
-    Ok(Arc::new(store::SqliteStore::open(path)?))
-}
-
-#[cfg(not(feature = "sqlite"))]
-fn open_store(path: &str) -> anyhow::Result<Arc<dyn IvStore>> {
-    tracing::warn!(
-        path,
-        "built without the `sqlite` feature — --store won't persist across runs; using an in-memory store"
-    );
-    Ok(Arc::new(exub_core::MemoryIvStore::new()))
-}
-
-/// Print one evidence row of the streaming scan table. `-` marks a value the engine could
-/// not compute (never a fabricated zero).
-fn print_hit_row(r: &CheapVolResult) {
-    println!(
-        "{:<8} {:>5.0}% {:>8} {:>8} {:>8} {:>7} {:>7}",
-        r.symbol,
-        r.iv * 100.0,
-        r.iv_rank
-            .map(|v| format!("{v:.2}"))
-            .unwrap_or_else(|| "-".into()),
-        r.realized_vol
-            .map(|v| format!("{:.0}%", v * 100.0))
-            .unwrap_or_else(|| "-".into()),
-        r.realized_over_implied
-            .map(|v| format!("{v:.2}"))
-            .unwrap_or_else(|| "-".into()),
-        r.big_moves,
-        // How many IV observations backed this row's rank (the P8.3 citation).
-        r.iv_history_len,
-    );
+    for f in &verdict.findings {
+        let (start, end) = (f.span.start as usize, f.span.end as usize);
+        let excerpt = text.get(start..end).unwrap_or("");
+        println!(
+            "  [{start}..{end}] {} (score {:.2}) \u{201c}{excerpt}\u{201d}",
+            f.label, f.score
+        );
+    }
 }

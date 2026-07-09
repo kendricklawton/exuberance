@@ -1,17 +1,22 @@
-//! `cargo xtask <cmd>` — dev orchestration for the exuberance engine.
+//! `cargo xtask <cmd>` — dev orchestration for the `agent` kernel.
 //!
 //! `ci` runs the full local gate (fmt, clippy, build, test, docs, feature powerset, deny) — the same
 //! checks, in the same order and with the same `-D warnings` bar, that `.github/workflows/ci.yml` runs,
-//! stopping at the first failure. No API keys needed: tests drive the mock adapters.
+//! stopping at the first failure. Keyless and offline: the mock detector needs no network.
+//!
+//! `build-detectors` compiles each `detectors/*` source to `wasm32-unknown-unknown` (the artifacts
+//! aren't run until the Phase-3 wasmtime host exists; this only proves they compile). It is deliberately
+//! separate from `ci` — folding artifact builds into the gate is ROADMAP P2.3.
 
 #![forbid(unsafe_code)]
 
 use std::process::Command;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "xtask", about = "dev orchestration for exuberance")]
+#[command(name = "xtask", about = "dev orchestration for the agent kernel")]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -21,11 +26,14 @@ struct Cli {
 enum Cmd {
     /// Run the full local gate (fmt, clippy, build, test, docs, feature powerset, deny) — mirrors CI.
     Ci,
+    /// Compile every `detectors/*` source to wasm32 (proves they build; not run until Phase 3).
+    BuildDetectors,
 }
 
 fn main() -> anyhow::Result<()> {
     match Cli::parse().cmd {
         Cmd::Ci => ci(),
+        Cmd::BuildDetectors => build_detectors(),
     }
 }
 
@@ -68,6 +76,36 @@ fn ci() -> anyhow::Result<()> {
     ])?;
     cargo(&["deny", "check"])?;
     println!("\n\u{2713} all checks passed");
+    Ok(())
+}
+
+/// Build every detector under `detectors/` (each dir with a `Cargo.toml`) to
+/// `wasm32-unknown-unknown`. Output goes under the git-ignored `target/detectors` so nested
+/// build dirs never leak into the repo. Detectors are excluded from the workspace, so this is
+/// the only place they're compiled.
+fn build_detectors() -> anyhow::Result<()> {
+    let mut built = 0usize;
+    for entry in std::fs::read_dir("detectors")? {
+        let dir = entry?.path();
+        let manifest = dir.join("Cargo.toml");
+        if !manifest.is_file() {
+            continue;
+        }
+        let manifest = manifest.to_str().context("detector path is not UTF-8")?;
+        cargo(&[
+            "build",
+            "--manifest-path",
+            manifest,
+            "--target",
+            "wasm32-unknown-unknown",
+            "--release",
+            "--target-dir",
+            "target/detectors",
+        ])?;
+        built += 1;
+    }
+    anyhow::ensure!(built > 0, "no detectors found under detectors/");
+    println!("\n\u{2713} built {built} detector artifact(s) → target/detectors");
     Ok(())
 }
 

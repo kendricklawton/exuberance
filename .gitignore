@@ -1,13 +1,7 @@
 /target
+# detectors build to their own target dir under the git-ignored root target
+**/target/
 **/*.rs.bk
 .env
 .env.local
 *.log
-# local scratch data pulls
-/data/*.json
-/data/*.csv
-!/data/.gitkeep
-# persistent IV-history / journal stores (Phase 8) — local state, never committed
-*.db
-*.sqlite
-*.sqlite3

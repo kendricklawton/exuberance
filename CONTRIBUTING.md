@@ -24,8 +24,8 @@ git clone <repo> && cd <repo>
 cargo build
 
 # The mock detector is the keyless default — no keys, no network, no registry:
-cargo run -p cli -- check --detector mock "text to scan"   # rendered Verdict
-cargo run -p cli -- check --detector mock --json < file    # wire output; exit 1 = detection
+cargo run -p agent-cli -- check --detector mock "text to scan"   # rendered Verdict
+cargo run -p agent-cli -- check --detector mock --json < file    # wire output; exit 1 = detection
 ```
 
 Config is layered **flags > env (`AGENT_*`) > file (TOML) > defaults**. Exit codes
