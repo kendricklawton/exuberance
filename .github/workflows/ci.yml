@@ -1,5 +1,5 @@
-# CI — fmt, clippy, build, test, docs, and supply-chain. Needs no network or API keys: tests drive the mock
-# adapters, so the whole pipeline runs offline on a stock runner. Mirror it locally with `cargo xtask ci`.
+# CI — fmt, clippy, build, test, docs, wasm artifact build, and supply-chain. Needs no network or API keys:
+# the mock detector keeps the whole pipeline offline on a stock runner. Mirror it locally with `cargo xtask ci`.
 name: CI
 
 on:
@@ -28,8 +28,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install the pinned toolchain
-        run: rustup component add rustfmt clippy
+      - name: Install the pinned toolchain + wasm target
+        run: |
+          rustup component add rustfmt clippy
+          rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
 
       - name: Format
@@ -43,7 +45,7 @@ jobs:
       - name: Build
         run: cargo build --locked
 
-      - name: Test (offline — mock adapters, no API keys)
+      - name: Test (offline — mock detector, no keys)
         run: cargo test --all-features --locked
 
       # Docs are a shipped surface: broken/redundant intra-doc links fail here, not silently on the
@@ -52,6 +54,12 @@ jobs:
         run: cargo doc --no-deps --workspace --all-features --locked
         env:
           RUSTDOCFLAGS: -D warnings
+
+      # Every detector source must compile to wasm — mirrors the artifact step folded into
+      # `cargo xtask ci` (P2.3). Not executed until the Phase-3 runtime exists; this only proves
+      # it builds. The wasm target was installed above.
+      - name: Build detector artifacts (wasm)
+        run: cargo xtask build-detectors
 
   features:
     name: feature matrix

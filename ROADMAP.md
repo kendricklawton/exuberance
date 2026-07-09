@@ -126,20 +126,20 @@ shape.
 Goal: the 12-factor + rigor substrate, before any real I/O — every later phase inherits the
 gate instead of relitigating discipline by hand.
 
-- [ ] **P2.1** Layered `Config` (**flags > env (`AGENT_*`) > file (TOML) > defaults**) with a
+- [x] **P2.1** Layered `Config` (**flags > env (`AGENT_*`) > file (TOML) > defaults**) with a
       pure `resolve()` fold and precedence pinned by unit tests; detector/artifact selection
       is config, not code. **This tool holds no secrets** — there is no API key to read,
       and no phase may add one to the detection path.
-- [ ] **P2.2** `tracing` logs to **stderr**, filtered by config; stdout reserved for
+- [x] **P2.2** `tracing` logs to **stderr**, filtered by config; stdout reserved for
       verdicts, so `agent check … 2>/dev/null` stays pipe-clean. Exit codes are part of the
       wire contract: `0` clean · `1` detection fired · `2`+ operational error.
-- [ ] **P2.3** `cargo xtask ci` — the local gate: fmt · clippy `-D warnings` · build · test ·
+- [x] **P2.3** `cargo xtask ci` — the local gate: fmt · clippy `-D warnings` · build · test ·
       docs (`RUSTDOCFLAGS=-D warnings`) · feature powerset (`cargo-hack`) · `cargo-deny` ·
       **artifact build** (every `detectors/*` source **compiles** to wasm; goldens run via
       the P1.5 native path for now — they switch to executing the built artifact in P3.4,
       once a runtime exists to run wasm at all). Keyless, offline, stops at the first
       failure.
-- [ ] **P2.4** A GitHub Actions workflow mirroring the gate step-for-step, plus one aggregate
+- [x] **P2.4** A GitHub Actions workflow mirroring the gate step-for-step, plus one aggregate
       required status check so branch protection needs a single rule.
 
 **Exit gate:** all P2 boxes checked · gate green locally **and** in CI with no secrets ·

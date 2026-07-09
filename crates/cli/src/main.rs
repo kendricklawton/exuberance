@@ -1,16 +1,22 @@
 //! The `agent` CLI — run a detector over text and print a cited `Verdict`.
 //!
-//! Phase 1 wires the `check` subcommand to the **native** mock detector — no wasmtime yet. The
-//! Phase-3 host swaps in a `WasmDetector` behind the same `agent_abi::Detector` trait, and this
-//! surface doesn't change. Exit codes are part of the wire contract: `0` clean, `1` a detection
-//! fired, `2` an operational error.
+//! Configuration is layered **flags > env (`AGENT_*`) > file (TOML) > defaults** (see
+//! [`config`]). Phase 1 wired the `check` subcommand to the **native** mock detector — no
+//! wasmtime yet; the Phase-3 host swaps in a `WasmDetector` behind the same
+//! `agent_abi::Detector` trait, and this surface doesn't change. Exit codes are part of the
+//! wire contract: `0` clean, `1` a detection fired, `2` an operational error.
 #![forbid(unsafe_code)]
 
+mod config;
+
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use agent_abi::{Detector, Verdict};
 use clap::{Parser, Subcommand};
+
+use crate::config::{resolve, Config, Partial};
 
 #[derive(Parser)]
 #[command(
@@ -20,6 +26,18 @@ use clap::{Parser, Subcommand};
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
+
+    /// TOML config file. Precedence: flags > env (`AGENT_*`) > this file > defaults.
+    #[arg(long, global = true, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// Detector to run (overrides `AGENT_DETECTOR` and the config file).
+    #[arg(long, global = true, value_name = "NAME")]
+    detector: Option<String>,
+
+    /// Log filter for stderr, e.g. `warn`, `debug`, `agent=debug` (overrides `AGENT_LOG`).
+    #[arg(long, global = true, value_name = "FILTER")]
+    log: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -30,9 +48,6 @@ enum Cmd {
 
 #[derive(clap::Args)]
 struct CheckArgs {
-    /// Which detector to run. Only the keyless `mock` exists in Phase 1.
-    #[arg(long, default_value = "mock")]
-    detector: String,
     /// Emit the Verdict as JSON on stdout (the wire contract) instead of a human summary.
     #[arg(long)]
     json: bool,
@@ -41,10 +56,7 @@ struct CheckArgs {
 }
 
 fn main() -> ExitCode {
-    let result = match Cli::parse().cmd {
-        Cmd::Check(args) => run_check(args),
-    };
-    match result {
+    match run() {
         Ok(true) => ExitCode::from(1),  // a detection fired
         Ok(false) => ExitCode::SUCCESS, // clean
         Err(e) => {
@@ -54,8 +66,46 @@ fn main() -> ExitCode {
     }
 }
 
+fn run() -> anyhow::Result<bool> {
+    let cli = Cli::parse();
+    let cfg = load_config(&cli)?;
+    init_tracing(&cfg.log);
+    tracing::debug!(detector = %cfg.detector, log = %cfg.log, "resolved config");
+    match cli.cmd {
+        Cmd::Check(args) => run_check(&cfg, args),
+    }
+}
+
+/// Initialize stderr logging, filtered by the resolved log directive. **stdout stays reserved
+/// for verdicts**, so `agent check … 2>/dev/null` is pipe-clean. An invalid filter falls back to
+/// `warn` rather than failing the run (a bad log setting must never break detection).
+fn init_tracing(filter: &str) {
+    let env_filter = tracing_subscriber::EnvFilter::try_new(filter)
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(env_filter)
+        .with_target(false)
+        .try_init();
+}
+
+/// Fold the config layers: flags > env (`AGENT_*`) > `--config` file > defaults.
+fn load_config(cli: &Cli) -> anyhow::Result<Config> {
+    let file = match &cli.config {
+        Some(path) => Partial::from_toml_file(path)?,
+        None => Partial::default(),
+    };
+    let env = Partial::from_env();
+    let flags = Partial {
+        detector: cli.detector.clone(),
+        log: cli.log.clone(),
+        artifact_dir: None,
+    };
+    Ok(resolve(file, env, flags))
+}
+
 /// Run `agent check`. Returns `Ok(true)` if the detector fired, `Ok(false)` if clean.
-fn run_check(args: CheckArgs) -> anyhow::Result<bool> {
+fn run_check(cfg: &Config, args: CheckArgs) -> anyhow::Result<bool> {
     let text = match args.text {
         Some(t) => t,
         None => {
@@ -65,7 +115,13 @@ fn run_check(args: CheckArgs) -> anyhow::Result<bool> {
         }
     };
 
-    let verdict = detect(&args.detector, &text)?;
+    tracing::info!(detector = %cfg.detector, bytes = text.len(), "running check");
+    let verdict = detect(&cfg.detector, &text)?;
+    tracing::debug!(
+        findings = verdict.findings.len(),
+        fired = verdict.fired(),
+        "verdict"
+    );
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&verdict)?);

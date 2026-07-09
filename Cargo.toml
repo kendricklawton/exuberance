@@ -25,6 +25,11 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The TOML config-file layer (flags > env > file > defaults). No secrets ever live here.
+toml = "0.8"
+# Structured logging to stderr, filtered by config; stdout stays reserved for verdicts.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # No-panic discipline: a hostile artifact, a malformed buffer, or a bad input is a value
 # (`Err`), never a crash. `unwrap`/`expect` are denied outside tests; `clippy.toml` re-allows

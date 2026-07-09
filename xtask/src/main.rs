@@ -75,6 +75,11 @@ fn ci() -> anyhow::Result<()> {
         "--workspace",
     ])?;
     cargo(&["deny", "check"])?;
+    // Every detector source must compile to wasm — this folds the P1.4 artifact build into the
+    // gate (P2.3). Goldens still run via the native path (the `agent-abi` mock tests) until
+    // P3.4 has a wasmtime runtime to execute the artifact at all. Needs the wasm32 target, which
+    // `rust-toolchain.toml` pins so rustup installs it locally and in CI.
+    build_detectors()?;
     println!("\n\u{2713} all checks passed");
     Ok(())
 }
