@@ -21,9 +21,17 @@ pub enum HostError {
         found: i32,
     },
     /// The artifact imports something beyond the ABI (a WASI clock, randomness, the network …).
-    /// The deterministic linker provides nothing, so such an artifact cannot load — named here so
-    /// the operator sees *what* it reached for.
-    ForbiddenImport(String),
+    /// The deterministic linker provides nothing, so such an artifact cannot load — the module and
+    /// field are kept separate so the operator sees exactly *what* it reached for.
+    ForbiddenImport {
+        /// The import module, e.g. `wasi_snapshot_preview1`.
+        module: String,
+        /// The import field, e.g. `clock_time_get`.
+        name: String,
+    },
+    /// The requested [`crate::Limits`] are unusable (e.g. zero fuel or zero memory would trap or
+    /// fail every call); rejected at load rather than surfacing as a confusing per-call trap.
+    InvalidLimits(&'static str),
     /// A required ABI export (`abi_version` / `alloc` / `dealloc` / `detect`, or `memory`) is
     /// missing or has the wrong signature.
     MissingExport(&'static str),
@@ -49,10 +57,11 @@ impl std::fmt::Display for HostError {
                 f,
                 "artifact ABI version {found} does not match host ABI version {expected}"
             ),
-            HostError::ForbiddenImport(name) => write!(
+            HostError::ForbiddenImport { module, name } => write!(
                 f,
-                "artifact imports `{name}`, which the deterministic sandbox does not provide"
+                "artifact imports `{module}::{name}`, which the deterministic sandbox does not provide"
             ),
+            HostError::InvalidLimits(why) => write!(f, "invalid sandbox limits: {why}"),
             HostError::MissingExport(name) => {
                 write!(f, "artifact is missing the required `{name}` export")
             }

@@ -42,7 +42,12 @@ const EPOCH_TICK: Duration = Duration::from_millis(1);
 
 /// The per-call resource budget. Absolute, generous ceilings — not tuning knobs; they exist so a
 /// bad artifact is *contained*, and a real call never approaches them.
+///
+/// `#[non_exhaustive]`: build from [`Limits::default`] and the `with_*` setters rather than a
+/// struct literal, so new bounds can be added without breaking embedders (this is public SDK
+/// surface at ROADMAP P7.1). Fields stay readable.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct Limits {
     /// Units of wasm fuel a single `detect` may burn before it traps.
     pub fuel: u64,
@@ -59,6 +64,43 @@ impl Default for Limits {
             max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
             wall_budget: DEFAULT_WALL_BUDGET,
         }
+    }
+}
+
+impl Limits {
+    /// Set the fuel budget (units of wasm a single call may burn).
+    #[must_use]
+    pub fn with_fuel(mut self, fuel: u64) -> Self {
+        self.fuel = fuel;
+        self
+    }
+
+    /// Set the linear-memory ceiling in bytes.
+    #[must_use]
+    pub fn with_max_memory_bytes(mut self, bytes: usize) -> Self {
+        self.max_memory_bytes = bytes;
+        self
+    }
+
+    /// Set the wall-clock budget per call.
+    #[must_use]
+    pub fn with_wall_budget(mut self, budget: Duration) -> Self {
+        self.wall_budget = budget;
+        self
+    }
+
+    /// Reject a budget that would trap or fail *every* call, so the mistake surfaces once at load
+    /// as a clear [`HostError::InvalidLimits`] rather than as a confusing per-call trap.
+    fn validate(&self) -> Result<(), HostError> {
+        if self.fuel == 0 {
+            return Err(HostError::InvalidLimits("fuel must be non-zero"));
+        }
+        if self.max_memory_bytes == 0 {
+            return Err(HostError::InvalidLimits(
+                "max_memory_bytes must be non-zero",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -112,6 +154,15 @@ pub struct WasmDetector {
     _epoch: EpochTicker,
 }
 
+impl std::fmt::Debug for WasmDetector {
+    // The `Engine`/`Module` internals aren't usefully printable; surface the budget instead.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WasmDetector")
+            .field("limits", &self.limits)
+            .finish_non_exhaustive()
+    }
+}
+
 impl WasmDetector {
     /// Compile and load an artifact from wasm bytes with the default [`Limits`], verifying it
     /// exports a conformant, version-matching ABI.
@@ -138,6 +189,7 @@ impl WasmDetector {
     /// # Errors
     /// As [`from_binary`](Self::from_binary).
     pub fn with_limits(wasm: &[u8], limits: Limits) -> Result<Self, HostError> {
+        limits.validate()?;
         let mut config = Config::new();
         config.consume_fuel(true);
         config.epoch_interruption(true);
@@ -150,11 +202,10 @@ impl WasmDetector {
         // not exist. Reject an artifact that reaches for any of them at load, naming the offending
         // import, rather than letting it surface as a confusing instantiate-time link failure.
         if let Some(import) = module.imports().next() {
-            return Err(HostError::ForbiddenImport(format!(
-                "{}::{}",
-                import.module(),
-                import.name()
-            )));
+            return Err(HostError::ForbiddenImport {
+                module: import.module().to_string(),
+                name: import.name().to_string(),
+            });
         }
         let epoch = EpochTicker::spawn(&engine);
         let detector = Self {

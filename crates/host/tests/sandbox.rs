@@ -8,7 +8,7 @@ mod common;
 
 use std::time::Duration;
 
-use agent_host::{HostError, Limits, WasmDetector, DEFAULT_FUEL, DEFAULT_MAX_MEMORY_BYTES};
+use agent_host::{HostError, Limits, WasmDetector, DEFAULT_FUEL};
 
 /// A minimal ABI-conformant module whose `detect` never returns — the canonical runaway. `body`
 /// is spliced into `detect` so each test can pick its trap; the other exports are inert.
@@ -52,11 +52,7 @@ fn clean_input_through_the_sandbox_has_no_findings() {
 fn fuel_bomb_is_contained_as_fuel_exhausted() {
     // An infinite loop with a small fuel budget traps quickly and deterministically.
     let wasm = wat_detector(0, "(loop $l (br $l))");
-    let limits = Limits {
-        fuel: 100_000,
-        max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
-        wall_budget: Duration::from_secs(1),
-    };
+    let limits = Limits::default().with_fuel(100_000);
     let detector = WasmDetector::with_limits(&wasm, limits).expect("load fuel bomb");
     assert!(matches!(
         detector.detect("x"),
@@ -69,11 +65,9 @@ fn runaway_hits_the_wall_clock_kill_switch() {
     // Fuel is effectively unbounded, so the epoch deadline (a tight wall-clock budget) is what
     // stops the loop — the kill switch fuel alone would not provide.
     let wasm = wat_detector(0, "(loop $l (br $l))");
-    let limits = Limits {
-        fuel: DEFAULT_FUEL.saturating_mul(1000),
-        max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
-        wall_budget: Duration::from_millis(20),
-    };
+    let limits = Limits::default()
+        .with_fuel(DEFAULT_FUEL.saturating_mul(1000))
+        .with_wall_budget(Duration::from_millis(20));
     let detector = WasmDetector::with_limits(&wasm, limits).expect("load runaway");
     assert!(matches!(detector.detect("x"), Err(HostError::Timeout)));
 }
@@ -103,14 +97,21 @@ fn start_function_fuel_bomb_is_contained() {
              (func (export "detect") (param i32 i32) (result i32) (i32.const 0)))"#,
     )
     .expect("assemble test WAT");
-    let limits = Limits {
-        fuel: 10_000,
-        max_memory_bytes: DEFAULT_MAX_MEMORY_BYTES,
-        wall_budget: Duration::from_secs(1),
-    };
+    let limits = Limits::default().with_fuel(10_000);
     assert!(matches!(
         WasmDetector::with_limits(&wasm, limits),
         Err(HostError::FuelExhausted)
+    ));
+}
+
+#[test]
+fn zero_fuel_limits_are_rejected_at_load() {
+    // A budget that would trap every call is caught once, at load, as a clear typed error.
+    let wasm = wat_detector(0, "");
+    let limits = Limits::default().with_fuel(0);
+    assert!(matches!(
+        WasmDetector::with_limits(&wasm, limits),
+        Err(HostError::InvalidLimits(_))
     ));
 }
 
@@ -142,8 +143,9 @@ fn artifact_importing_beyond_the_abi_is_rejected() {
     )
     .expect("assemble test WAT");
     match WasmDetector::from_binary(&wasm) {
-        Err(HostError::ForbiddenImport(name)) => {
-            assert_eq!(name, "wasi_snapshot_preview1::clock_time_get");
+        Err(HostError::ForbiddenImport { module, name }) => {
+            assert_eq!(module, "wasi_snapshot_preview1");
+            assert_eq!(name, "clock_time_get");
         }
         Err(other) => panic!("expected ForbiddenImport, got {other:?}"),
         Ok(_) => panic!("expected ForbiddenImport, but the artifact loaded"),

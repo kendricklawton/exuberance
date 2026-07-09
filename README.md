@@ -31,9 +31,10 @@ portable artifact**. agent's bet: package detection like a codec, not a SaaS.
 ## Quick start
 
 ```bash
-cargo run -p cli -- check --detector mock "some text to scan"   # keyless, offline, toolless
-cargo run -p cli -- check --detector mock --json < input.txt    # machine output; exit 1 = detection
-cargo xtask ci                                                  # the full local gate
+cargo xtask build-detectors                                          # compile the wasm artifacts
+cargo run -p agent-cli -- check --detector mock "some text to scan"  # keyless, offline, toolless
+cargo run -p agent-cli -- check --detector mock --format json < input.txt  # machine output; exit 1
+cargo xtask ci                                                       # the full local gate
 ```
 
 Exit codes are part of the contract: `0` clean · `1` detection fired · `2`+

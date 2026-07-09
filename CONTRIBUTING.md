@@ -27,8 +27,8 @@ cargo build
 cargo xtask build-detectors
 
 # The mock detector is the keyless default — no keys, no network, no registry:
-cargo run -p agent-cli -- check --detector mock "text to scan"   # rendered Verdict
-cargo run -p agent-cli -- check --detector mock --json < file    # wire output; exit 1 = detection
+cargo run -p agent-cli -- check --detector mock "text to scan"          # rendered Verdict
+cargo run -p agent-cli -- check --detector mock --format json < file    # wire output; exit 1
 ```
 
 Point `check` at installed artifacts with `--config`, `AGENT_ARTIFACT_DIR`, or a config file;
