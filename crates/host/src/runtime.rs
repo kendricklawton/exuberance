@@ -3,12 +3,14 @@
 //! One [`WasmDetector`] owns an [`Engine`] and a compiled [`Module`] (compile once, run many).
 //! Each [`detect`](WasmDetector::detect) call gets a **fresh [`Store`]** — a clean linear memory
 //! with its own fuel, memory ceiling, and epoch deadline — so no state leaks between calls and a
-//! runaway call cannot starve the next (instance-per-call; P3.3 measures whether to pool).
+//! runaway call cannot starve the next (instance-per-call over the cached module; the *why* is
+//! ARCHITECTURE decision 002).
 //!
 //! Three bounds ride every instantiation, so a hostile or buggy artifact is a contained `Err`,
 //! never a hang or a leak:
 //! - **fuel** — a hard cap on executed wasm, so an infinite loop traps deterministically;
-//! - **memory** — a linear-memory ceiling enforced by a [`StoreLimits`] limiter;
+//! - **memory** — a linear-memory ceiling enforced by the store's [`MemLimiter`]; blowing it is
+//!   a typed [`HostError::MemoryExceeded`], not a hang or a host allocation;
 //! - **epoch** — a wall-clock kill switch: a background thread ticks the engine's epoch and each
 //!   store trips after its deadline, catching anything fuel alone wouldn't.
 
@@ -21,8 +23,7 @@ use std::time::Duration;
 use agent_abi::abi::{exports, LEN_PREFIX_BYTES};
 use agent_abi::{Verdict, ABI_VERSION};
 use wasmtime::{
-    Config, Engine, Instance, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, Trap,
-    TypedFunc,
+    Config, Engine, Instance, Linker, Memory, Module, ResourceLimiter, Store, Trap, TypedFunc,
 };
 
 use crate::error::HostError;
@@ -31,7 +32,8 @@ use crate::error::HostError;
 /// few thousand on a typical input; a loop that reaches this is a runaway and traps.
 pub const DEFAULT_FUEL: u64 = 1_000_000_000;
 /// Default linear-memory ceiling: 64 MiB. Ample for a detector's buffers; a hostile artifact
-/// that tries to grow past it fails the allocation rather than exhausting the host.
+/// that tries to grow past it is denied at the grow site with a typed
+/// [`HostError::MemoryExceeded`] rather than exhausting the host.
 pub const DEFAULT_MAX_MEMORY_BYTES: usize = 64 * 1024 * 1024;
 /// Default wall-clock budget per call: the epoch kill switch fires after this even if fuel is not
 /// spent (e.g. a host trap loop). Generous; a real call finishes in microseconds.
@@ -44,8 +46,8 @@ const EPOCH_TICK: Duration = Duration::from_millis(1);
 /// bad artifact is *contained*, and a real call never approaches them.
 ///
 /// `#[non_exhaustive]`: build from [`Limits::default`] and the `with_*` setters rather than a
-/// struct literal, so new bounds can be added without breaking embedders (this is public SDK
-/// surface at ROADMAP P7.1). Fields stay readable.
+/// struct literal, so new bounds can be added without breaking embedders (this is public
+/// embedder surface). Fields stay readable.
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct Limits {
@@ -106,7 +108,58 @@ impl Limits {
 
 /// Per-`Store` data: the memory limiter the store consults on every `memory.grow`.
 struct StoreState {
-    limits: StoreLimits,
+    limits: MemLimiter,
+}
+
+/// The store's [`ResourceLimiter`]: enforces the linear-memory ceiling and **records a denial**,
+/// so the resulting trap surfaces as the typed [`HostError::MemoryExceeded`] rather than a
+/// generic [`HostError::Trap`].
+///
+/// Denial returns `Err`, which wasmtime treats as an immediate trap at the `memory.grow` site —
+/// deterministic containment. (`Ok(false)` would instead hand the guest a `-1` it could spin on.)
+struct MemLimiter {
+    /// The ceiling, in bytes ([`Limits::max_memory_bytes`]).
+    max_memory_bytes: usize,
+    /// Set when a growth request is denied: the total byte size the artifact asked for.
+    denied: Option<usize>,
+}
+
+impl ResourceLimiter for MemLimiter {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        if desired > self.max_memory_bytes {
+            self.denied = Some(desired);
+            return Err(wasmtime::Error::msg(format!(
+                "linear-memory request of {desired} bytes exceeds the {}-byte ceiling",
+                self.max_memory_bytes
+            )));
+        }
+        Ok(true)
+    }
+
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        _desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        // Tables are element counts bounded by module validation; the memory ceiling is the
+        // resource that matters here.
+        Ok(true)
+    }
+
+    // A detector artifact is exactly one instance with one linear memory.
+    fn instances(&self) -> usize {
+        1
+    }
+
+    fn memories(&self) -> usize {
+        1
+    }
 }
 
 /// A background thread that advances an [`Engine`]'s epoch on a fixed tick, so epoch deadlines
@@ -193,6 +246,13 @@ impl WasmDetector {
         let mut config = Config::new();
         config.consume_fuel(true);
         config.epoch_interruption(true);
+        // Determinism by construction, not just by absence: pin the two compile-time knobs that
+        // could otherwise let identical inputs produce different bits across architectures. Nan
+        // canonicalization fixes float NaN payloads; deterministic relaxed-SIMD forbids the
+        // per-platform "relaxed" results. No-ops for today's integer-only rules, but they make
+        // the cross-arch byte-identity claim hold when float/SIMD detectors appear.
+        config.cranelift_nan_canonicalization(true);
+        config.relaxed_simd_deterministic(true);
         let engine =
             Engine::new(&config).map_err(|e| HostError::Runtime(format!("engine: {e}")))?;
         let module =
@@ -221,14 +281,15 @@ impl WasmDetector {
     /// Run detection over `input` in a fresh sandbox and decode the framed [`Verdict`].
     ///
     /// # Errors
-    /// A trap ([`HostError::FuelExhausted`], [`HostError::Timeout`], [`HostError::Trap`]), a bad
-    /// pointer ([`HostError::BadMemory`]), or a result that does not decode ([`HostError::Decode`]).
+    /// A trap ([`HostError::FuelExhausted`], [`HostError::Timeout`],
+    /// [`HostError::MemoryExceeded`], [`HostError::Trap`]), a bad pointer
+    /// ([`HostError::BadMemory`]), or a result that does not decode ([`HostError::Decode`]).
     pub fn detect(&self, input: &str) -> Result<Verdict, HostError> {
         let mut store = self.new_store()?;
         let linker = Linker::new(&self.engine);
         let instance = linker
             .instantiate(&mut store, &self.module)
-            .map_err(map_instantiate)?;
+            .map_err(|e| map_instantiate(e, &store))?;
 
         let memory = instance
             .get_memory(&mut store, "memory")
@@ -238,9 +299,13 @@ impl WasmDetector {
 
         let len = i32::try_from(input.len())
             .map_err(|_| HostError::Runtime("input exceeds i32 length".into()))?;
-        let in_ptr = alloc.call(&mut store, len).map_err(map_trap)?;
+        let in_ptr = alloc
+            .call(&mut store, len)
+            .map_err(|e| map_call_err(e, &store))?;
         write_bytes(&memory, &mut store, in_ptr, input.as_bytes())?;
-        let out_ptr = detect.call(&mut store, (in_ptr, len)).map_err(map_trap)?;
+        let out_ptr = detect
+            .call(&mut store, (in_ptr, len))
+            .map_err(|e| map_call_err(e, &store))?;
 
         // Instance-per-call: the whole linear memory is reclaimed when `store` drops here, so the
         // artifact's buffers need no explicit `dealloc` (its presence is still verified at load).
@@ -254,7 +319,7 @@ impl WasmDetector {
         let linker = Linker::new(&self.engine);
         let instance = linker
             .instantiate(&mut store, &self.module)
-            .map_err(map_instantiate)?;
+            .map_err(|e| map_instantiate(e, &store))?;
 
         // Every conformant artifact exports these four functions and a linear memory.
         instance
@@ -265,7 +330,9 @@ impl WasmDetector {
         typed_func::<(i32, i32), ()>(&instance, &mut store, exports::DEALLOC)?;
         typed_func::<(i32, i32), i32>(&instance, &mut store, exports::DETECT)?;
 
-        let found = abi_version.call(&mut store, ()).map_err(map_trap)?;
+        let found = abi_version
+            .call(&mut store, ())
+            .map_err(|e| map_call_err(e, &store))?;
         if found != ABI_VERSION {
             return Err(HostError::AbiMismatch {
                 expected: ABI_VERSION,
@@ -277,11 +344,10 @@ impl WasmDetector {
 
     /// A fresh store carrying this detector's memory limiter, fuel, and epoch deadline.
     fn new_store(&self) -> Result<Store<StoreState>, HostError> {
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(self.limits.max_memory_bytes)
-            .instances(1)
-            .memories(1)
-            .build();
+        let limits = MemLimiter {
+            max_memory_bytes: self.limits.max_memory_bytes,
+            denied: None,
+        };
         let mut store = Store::new(&self.engine, StoreState { limits });
         store.limiter(|state| &mut state.limits);
         store
@@ -359,12 +425,32 @@ fn read_verdict(
     Verdict::decode(framed).map_err(HostError::from)
 }
 
+/// The typed ceiling error, if this store's [`MemLimiter`] denied a growth request. Consulted
+/// before generic trap mapping so "blew the memory ceiling" never degrades into an opaque trap.
+fn ceiling_denial(store: &Store<StoreState>) -> Option<HostError> {
+    let limiter = &store.data().limits;
+    limiter
+        .denied
+        .map(|requested_bytes| HostError::MemoryExceeded {
+            requested_bytes,
+            max_bytes: limiter.max_memory_bytes,
+        })
+}
+
+/// Map a guest-call error: a recorded memory-ceiling denial wins, otherwise a trap mapping.
+fn map_call_err(err: wasmtime::Error, store: &Store<StoreState>) -> HostError {
+    ceiling_denial(store).unwrap_or_else(|| map_trap(err))
+}
+
 /// Map an instantiation error. Limits are applied to the store *before* instantiation, so a
 /// hostile `(start …)` function that loops or grows without bound is contained — but it traps
-/// during instantiate, so route trap errors through [`map_trap`] (preserving `FuelExhausted` /
-/// `Timeout`) and treat only genuine setup/link failures as [`HostError::Runtime`].
-fn map_instantiate(err: wasmtime::Error) -> HostError {
-    if err.downcast_ref::<Trap>().is_some() {
+/// during instantiate, so check the memory-ceiling denial first, route trap errors through
+/// [`map_trap`] (preserving `FuelExhausted` / `Timeout`), and treat only genuine setup/link
+/// failures as [`HostError::Runtime`].
+fn map_instantiate(err: wasmtime::Error, store: &Store<StoreState>) -> HostError {
+    if let Some(denied) = ceiling_denial(store) {
+        denied
+    } else if err.downcast_ref::<Trap>().is_some() {
         map_trap(err)
     } else {
         HostError::Runtime(format!("instantiate: {err}"))

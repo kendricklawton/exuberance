@@ -37,6 +37,14 @@ pub enum HostError {
     MissingExport(&'static str),
     /// The artifact burned its compute budget (fuel) — a runaway or hostile loop, contained.
     FuelExhausted,
+    /// The artifact tried to grow its linear memory past the configured ceiling
+    /// ([`crate::Limits::max_memory_bytes`]) — a huge allocation, denied at the grow site.
+    MemoryExceeded {
+        /// The total linear-memory size, in bytes, the artifact asked for.
+        requested_bytes: usize,
+        /// The ceiling it blew through.
+        max_bytes: usize,
+    },
     /// The artifact exceeded its wall-clock budget (epoch deadline) — the kill switch fired.
     Timeout,
     /// The artifact trapped for some other reason (out-of-bounds access, `unreachable`, …).
@@ -66,6 +74,13 @@ impl std::fmt::Display for HostError {
                 write!(f, "artifact is missing the required `{name}` export")
             }
             HostError::FuelExhausted => f.write_str("artifact exhausted its compute budget (fuel)"),
+            HostError::MemoryExceeded {
+                requested_bytes,
+                max_bytes,
+            } => write!(
+                f,
+                "artifact requested {requested_bytes} bytes of linear memory, over the {max_bytes}-byte ceiling"
+            ),
             HostError::Timeout => f.write_str("artifact exceeded its wall-clock budget"),
             HostError::Trap(e) => write!(f, "artifact trapped: {e}"),
             HostError::BadMemory => f.write_str("artifact returned a pointer outside its memory"),

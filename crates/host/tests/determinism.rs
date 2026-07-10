@@ -1,4 +1,4 @@
-//! P3.2 — determinism enforced by absence. With no clock, randomness, network, or filesystem
+//! Determinism enforced by absence. With no clock, randomness, network, or filesystem
 //! reachable from inside the sandbox, the same input must yield **byte-identical** verdicts, run
 //! after run. This asserts identity across 100 runs on one machine; the CI matrix runs the same
 //! test on a second OS/arch, so identity is also checked across targets.

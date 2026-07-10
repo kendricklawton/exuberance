@@ -1,5 +1,6 @@
-//! P3.1 — the wasmtime sandbox: an artifact runs and returns a cited `Verdict`, and a hostile or
-//! malformed artifact is a contained, typed error (fuel, epoch, ABI conformance), never a hang.
+//! The wasmtime sandbox: an artifact runs and returns a cited `Verdict`, and a hostile or
+//! malformed artifact is a contained, typed error (fuel, memory, epoch, ABI conformance),
+//! never a hang.
 // The `wat_detector` helper below is not a `#[test]` fn; a failure to assemble its fixture WAT
 // should panic and fail the test rather than be threaded as a value.
 #![allow(clippy::expect_used)]
@@ -73,6 +74,25 @@ fn runaway_hits_the_wall_clock_kill_switch() {
 }
 
 #[test]
+fn huge_alloc_is_contained_as_memory_exceeded() {
+    // A hostile `detect` asks for ~1 GiB of linear memory (16384 wasm pages) — far past the
+    // default 64 MiB ceiling. The limiter denies it *at the grow site* as a typed error naming
+    // both sides of the breach; the host never allocates on the artifact's behalf.
+    let wasm = wat_detector(0, "(drop (memory.grow (i32.const 16384)))");
+    let detector = WasmDetector::from_binary(&wasm).expect("load huge-alloc bomb");
+    match detector.detect("x") {
+        Err(HostError::MemoryExceeded {
+            requested_bytes,
+            max_bytes,
+        }) => {
+            assert_eq!(max_bytes, 64 * 1024 * 1024);
+            assert!(requested_bytes > max_bytes);
+        }
+        other => panic!("expected MemoryExceeded, got {other:?}"),
+    }
+}
+
+#[test]
 fn oversized_result_prefix_is_contained_not_allocated() {
     // A hostile `detect` writes a 4 GiB framed length prefix (0xFFFF_FFFF) at offset 0 and returns
     // a pointer to it. The host must reject it as a bad pointer — bounded by the guest's memory —
@@ -129,26 +149,34 @@ fn artifact_with_wrong_abi_version_is_rejected() {
 
 #[test]
 fn artifact_importing_beyond_the_abi_is_rejected() {
-    // A WASI clock import is exactly what the deterministic sandbox refuses to provide: an
-    // artifact that reaches for one cannot load, and the error names what it reached for.
-    let wasm = wat::parse_str(
-        r#"(module
-             (import "wasi_snapshot_preview1" "clock_time_get"
-               (func (param i32 i64 i32) (result i32)))
-             (memory (export "memory") 1)
-             (func (export "abi_version") (result i32) (i32.const 0))
-             (func (export "alloc") (param i32) (result i32) (i32.const 0))
-             (func (export "dealloc") (param i32 i32))
-             (func (export "detect") (param i32 i32) (result i32) (i32.const 0)))"#,
-    )
-    .expect("assemble test WAT");
-    match WasmDetector::from_binary(&wasm) {
-        Err(HostError::ForbiddenImport { module, name }) => {
-            assert_eq!(module, "wasi_snapshot_preview1");
-            assert_eq!(name, "clock_time_get");
+    // WASI imports are exactly what the deterministic sandbox refuses to provide — a clock,
+    // randomness, the network, the filesystem. An artifact that reaches for *any* of them cannot
+    // load, and the error names what it reached for.
+    let cases = [
+        ("clock_time_get", "(param i32 i64 i32) (result i32)"), // a clock
+        ("random_get", "(param i32 i32) (result i32)"),         // randomness
+        ("sock_recv", "(param i32 i32 i32 i32 i32 i32) (result i32)"), // the network
+        ("fd_read", "(param i32 i32 i32 i32) (result i32)"),    // the filesystem
+    ];
+    for (import, signature) in cases {
+        let wasm = wat::parse_str(format!(
+            r#"(module
+                 (import "wasi_snapshot_preview1" "{import}" (func {signature}))
+                 (memory (export "memory") 1)
+                 (func (export "abi_version") (result i32) (i32.const 0))
+                 (func (export "alloc") (param i32) (result i32) (i32.const 0))
+                 (func (export "dealloc") (param i32 i32))
+                 (func (export "detect") (param i32 i32) (result i32) (i32.const 0)))"#
+        ))
+        .expect("assemble test WAT");
+        match WasmDetector::from_binary(&wasm) {
+            Err(HostError::ForbiddenImport { module, name }) => {
+                assert_eq!(module, "wasi_snapshot_preview1");
+                assert_eq!(name, import);
+            }
+            Err(other) => panic!("expected ForbiddenImport for `{import}`, got {other:?}"),
+            Ok(_) => panic!("expected ForbiddenImport, but the `{import}` artifact loaded"),
         }
-        Err(other) => panic!("expected ForbiddenImport, got {other:?}"),
-        Ok(_) => panic!("expected ForbiddenImport, but the artifact loaded"),
     }
 }
 

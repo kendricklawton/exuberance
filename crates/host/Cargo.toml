@@ -25,8 +25,8 @@ wasmtime = { version = "46", default-features = false, features = [
 ] }
 
 [dev-dependencies]
-# Tests exercise the real mock artifact and compare it to the native rule (P3.4 golden), so the
-# mock rule is needed here.
+# Tests exercise the real mock artifact and compare it to the native rule (the native-vs-wasm
+# parity golden), so the mock rule is needed here.
 agent-abi = { path = "../abi", features = ["mock"] }
 # Hand-write tiny ABI-shaped modules in-test (fuel bomb, epoch bomb, ABI-mismatch) as WAT →
 # wasm bytes, so the sandbox's safety behavior is tested without a throwaway `detectors/` dir.

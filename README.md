@@ -1,104 +1,72 @@
 # agent *(working name)*
 
-**Guardrail detectors as portable WASM artifacts.** Tiny classifiers — prompt-
-injection, PII, secrets, toxicity — compiled into **signed, content-addressed
-`.wasm` artifacts** that run identically everywhere: embedded in a Rust, Go, or
-Python service via **wasmtime**, in an edge worker, in a proxy hot path, in a
-browser. **It detects and cites; it never decides** — policy stays in your host.
+**A self-hostable, isolated code-execution sandbox.** Run untrusted code inside a
+**Firecracker** microVM (hardware isolation via KVM), and watch and enforce what it does from
+**host-side eBPF** (**aya**) — syscalls, its network, its cgroup — from *outside* the guest,
+where the code can't see or subvert you. Every run yields a tamper-resistant, host-observed
+**flight recorder** of exactly what happened.
+
+Built in the open as a **Linux-internals deep-dive** — each milestone is a working demo and a
+writeup, from the hardware-isolation boundary up to the syscall/network boundary.
 
 ## Why
 
-Every LLM application needs guardrails, and today that means either calling a
-hosted classification API (latency, cost, your users' data leaving the process) or
-vendoring a Python service into every stack that needs checking. The guardrail
-market is crowded at the *service* layer — but **nobody ships the detector as a
-portable artifact**. agent's bet: package detection like a codec, not a SaaS.
+Running untrusted or AI-generated code safely is a real problem, and the honest answers are
+heavy VMs (E2B/Firecracker in the cloud) or shared-kernel containers (weaker isolation). This
+is the **self-hostable engine** underneath that kind of product:
 
-- **One artifact, every runtime.** A detector is a `.wasm` file implementing a
-  frozen, versioned ABI. The same bytes return the same verdict under wasmtime, at
-  the edge, or in a browser tab — proven by cross-target parity tests, not claimed.
-- **Deterministic, local, private — by construction.** The sandbox exposes no
-  clock, no randomness, no network, no filesystem. An artifact *cannot* be flaky
-  and *cannot* phone home, because the imports don't exist. Detection runs where
-  the data already is; nothing leaves your process.
-- **Measured, not marketed.** Every detector ships with a CI-generated scorecard
-  (precision/recall on public corpora). A quality regression fails CI like an API
-  break.
-- **Contained by design.** The runtime runs artifacts under fuel metering, memory
-  limits, and epoch interruption — a buggy or hostile artifact is a typed error,
-  never a hang.
+- **Isolation is hardware, not software.** Untrusted code runs in a KVM microVM. The trust
+  boundary is the CPU, not guest-side software.
+- **Observe & enforce from the host.** Visibility and policy live in host-side eBPF — the guest
+  cannot disable what it cannot reach. In-guest agents exist for convenience (exec/IO), never
+  for security.
+- **Deny by default.** A sandbox with no explicit policy reaches no network and holds minimal
+  capability; every allowance is explicit and recorded.
+- **Engine, not platform.** A runtime + a clean driver API you self-host. *Kubernetes is not a
+  PaaS, and neither is this.*
+- **Measured, not marketed.** Boot, snapshot-restore, density, and eBPF overhead are
+  benchmarked with percentiles — never hand-waved.
 
-## Quick start
+## Status
 
-```bash
-cargo xtask build-detectors                                          # compile the wasm artifacts
-cargo run -p agent-cli -- check --detector mock "some text to scan"  # keyless, offline, toolless
-cargo run -p agent-cli -- check --detector mock --format json < input.txt  # machine output; exit 1
-cargo xtask ci                                                       # the full local gate
-```
-
-Exit codes are part of the contract: `0` clean · `1` detection fired · `2`+
-operational error — so a CI step or a shell pipeline can gate on agent directly.
-Config is layered **flags > env (`AGENT_*`) > file (TOML) > defaults**. There are
-**no API keys**: the detection path needs none, by design.
+**Early and learning-driven.** The direction is set in [`ROADMAP.md`](ROADMAP.md); the build
+starts at Phase 1 (boot a real microVM from `cargo run` and read its console). Nothing here is
+production yet — the point is depth, done in the open.
 
 ## How it fits together
 
 ```
-text/stream → agent-host (wasmtime: fuel/memory/epoch, deterministic linker)
-            → detector artifact (.wasm, frozen ABI, embedded weights)
-            → canonical Verdict (labels + scores + spans + provenance)
+untrusted code
+      → Firecracker microVM (KVM: hardware isolation, jailer, cgroups, snapshots)
+      → host-side eBPF (aya): syscalls · the VM's tap device (tc/XDP) · its cgroup
+      → per-run flight recorder (network flows · notable syscalls · resources · denials)
 ```
 
-Two contracts carry everything: the **Detector ABI** (what an artifact implements —
-versioned, frozen, inference-technique-agnostic) and the **`Verdict`** wire type
-(what every surface returns — serde-stable, additive-only, golden-tested). The CLI,
-the SDKs (Rust/Go/Python), and the sidecar are pure views over the same runtime and
-must return byte-identical verdicts — a standing parity test proves it.
+The guest runs the code; the **host kernel** sees and governs it. That split — hardware
+isolation *plus* out-of-guest observability and enforcement — is the whole idea.
 
 ## Layout
 
 | Path | Role |
 |------|------|
-| `crates/abi` | `agent-abi` — the Detector ABI + the canonical `Verdict` wire type. |
-| `crates/host` | `agent-host` — the wasmtime runtime: sandboxing, determinism, instance pooling. |
-| `crates/cli` | The `agent` binary: `check`, later `pull` and `serve`. |
-| `detectors/` | Artifact **sources** (Rust → wasm32), one per detector, each with a manifest + golden cases. |
-| `xtask` | Dev orchestration — `cargo xtask ci`, including artifact builds + goldens. Never shipped. |
+| `crates/vmm` | The Firecracker driver: microVM lifecycle, rootfs, networking, snapshots, the `Sandbox` API. |
+| `crates/probes` | The eBPF programs (`no_std`, built for `bpfel-unknown-none` with aya). |
+| `crates/probes-loader` | Userspace: load/attach the probes, read their maps, stream events. |
+| `crates/cli` | The `agent` binary (`run`, `shell`, `--trace`) and later the `agentd` daemon. |
+| `xtask` | Dev orchestration — `cargo xtask ci`, the eBPF object build, the rootfs build. Never shipped. |
 
-## Scope — kernel, not service
+## Scope — engine, not platform
 
-**In scope:** detection, the ABI, the runtime, the toolchain that turns tiny models
-into artifacts, signed distribution, and SDKs. **Out of scope, permanently:**
-policy engines (block/allow/redact/route — your host's job, ⟐ the Go `operator`
-suite's product), hosted inference APIs, LLM-as-judge, model training as a service.
-The kernel returns spans precise enough that *you* can redact losslessly; it never
-does it for you.
-
-## Open core
-
-OSS forever: the runtime, the ABI + toolchain, the CLI/SDKs, and the reference
-detectors with their eval harness. The commercial seam is the **feed**: attacks
-evolve, so continuously retrained detector artifacts — signed, versioned, delivered
-through the same registry protocol the OSS tooling speaks — are the subscription.
-The kernel cannot tell a paid registry from a free one; the feed is additive, never
-required.
-
-## Roadmap
-
-The arc: ABI + `Verdict` + mock detector → config/CI gate → the wasmtime host →
-pattern detectors (secrets/PII) → the ML toolchain + injection flagship → the eval
-harness in CI → Rust/Go/Python SDKs → streaming detection → browser/edge parity →
-signed distribution → sidecar → release + benchmark writeup. The full plan — with
-its tombstone (policy in the kernel: cut by design) — is in
-[`ROADMAP.md`](ROADMAP.md); its checkboxes are the **single source of truth** for
-progress.
+**In scope:** the sandbox runtime (Firecracker), host-side observability + enforcement (eBPF),
+the sandbox lifecycle API, a self-hostable driver daemon, and the benchmarks that back the
+claims. **Out of scope, by design:** multi-tenant auth, billing, fleet scheduling, and a web
+dashboard — that's whatever *hosts* the engine. `containerd`, not Docker Cloud.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) — prerequisites, the local gate
-(`cargo xtask ci`), the testing approach, and the invariants. The operating manual
-is [`.rules`](.rules).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) — the prerequisites (KVM, `firecracker`, the aya
+toolchain), the local gate, the testing approach, and the invariants. The operating manual is
+[`.rules`](.rules); the staged plan is [`ROADMAP.md`](ROADMAP.md).
 
 ## License
 

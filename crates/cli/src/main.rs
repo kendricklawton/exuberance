@@ -12,12 +12,13 @@
 mod config;
 mod detector;
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use agent_abi::Verdict;
 use agent_host::WasmDetector;
+use agent_sandbox::{RunOpts, Sandbox};
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -50,6 +51,29 @@ struct Cli {
 enum Cmd {
     /// Run a detector over text (an argument, or stdin) and print a cited Verdict.
     Check(CheckArgs),
+    /// Execute an untrusted `wasm32-wasi` module in the sandbox; its stdout/stderr are streamed
+    /// and its exit code is propagated.
+    Run(RunArgs),
+    /// Run Python code inside the sandbox (Python compiled to wasm); prints its stdout.
+    RunPython(RunPythonArgs),
+}
+
+#[derive(clap::Args)]
+struct RunArgs {
+    /// Path to the `wasm32-wasi` module to execute.
+    module: PathBuf,
+    /// Forward this process's stdin to the module.
+    #[arg(long)]
+    stdin: bool,
+    /// Arguments passed to the module as argv (after argv[0], the program name).
+    #[arg(trailing_var_arg = true)]
+    args: Vec<String>,
+}
+
+#[derive(clap::Args)]
+struct RunPythonArgs {
+    /// Python source to run. If omitted, read the program from stdin.
+    code: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -80,17 +104,24 @@ enum Outcome {
 }
 
 impl Outcome {
-    fn exit_code(self) -> ExitCode {
+    /// The process exit code this outcome maps to: `0` clean · `1` findings. (Operational
+    /// errors are the `Err` arm in `main` and map to `2`.) Pure and unit-tested, so the
+    /// exit-code contract can't drift silently.
+    fn code(self) -> u8 {
         match self {
-            Outcome::Clean => ExitCode::SUCCESS,    // 0
-            Outcome::Detected => ExitCode::from(1), // a detection fired
+            Outcome::Clean => 0,
+            Outcome::Detected => 1,
         }
+    }
+
+    fn exit_code(self) -> ExitCode {
+        ExitCode::from(self.code())
     }
 }
 
 fn main() -> ExitCode {
     match run() {
-        Ok(outcome) => outcome.exit_code(),
+        Ok(code) => code,
         Err(e) => {
             eprintln!("agent: {e:#}");
             ExitCode::from(2) // operational error
@@ -98,7 +129,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run() -> anyhow::Result<Outcome> {
+fn run() -> anyhow::Result<ExitCode> {
     // Destructure so the flag values move straight into the config layer — nothing is cloned.
     let Cli {
         cmd,
@@ -108,10 +139,92 @@ fn run() -> anyhow::Result<Outcome> {
     } = Cli::parse();
     let cfg = load_config(config, detector, log)?;
     init_tracing(&cfg.log);
-    tracing::debug!(detector = %cfg.detector, log = %cfg.log, "resolved config");
     match cmd {
-        Cmd::Check(args) => run_check(&cfg, args),
+        Cmd::Check(args) => {
+            tracing::debug!(detector = %cfg.detector, "resolved config");
+            Ok(run_check(&cfg, args)?.exit_code())
+        }
+        Cmd::Run(args) => run_module(args),
+        Cmd::RunPython(args) => run_python(args),
     }
+}
+
+/// Execute a `wasm32-wasi` module in the sandbox: propagate its stdout/stderr and exit code.
+/// A load/trap failure is an operational error (exit 2), never a panic.
+fn run_module(args: RunArgs) -> anyhow::Result<ExitCode> {
+    let sandbox = Sandbox::from_file(&args.module)
+        .with_context(|| format!("loading module {}", args.module.display()))?;
+    let stdin = if args.stdin {
+        let mut buf = Vec::new();
+        std::io::stdin().read_to_end(&mut buf)?;
+        buf
+    } else {
+        Vec::new()
+    };
+    let argv0 = args
+        .module
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "module".to_string());
+    let mut argv = vec![argv0];
+    argv.extend(args.args);
+
+    let result = sandbox
+        .run(RunOpts {
+            stdin,
+            args: argv,
+            ..RunOpts::default()
+        })
+        .context("running module")?;
+    emit(&result.stdout, &result.stderr)?;
+    Ok(exit_code_of(result.exit_code))
+}
+
+/// Run Python source inside the sandbox by handing the bundled `python.wasm` a `-c <code>` argv.
+fn run_python(args: RunPythonArgs) -> anyhow::Result<ExitCode> {
+    let code = match args.code {
+        Some(c) => c,
+        None => {
+            let mut buf = String::new();
+            std::io::stdin().read_to_string(&mut buf)?;
+            buf
+        }
+    };
+    let wasm = python_wasm_path()?;
+    let sandbox = Sandbox::from_file(&wasm).with_context(|| {
+        format!(
+            "loading python runtime {} (set AGENT_PYTHON_WASM to a wasm32-wasi python build)",
+            wasm.display()
+        )
+    })?;
+    let result = sandbox
+        .run(RunOpts {
+            args: vec!["python".to_string(), "-c".to_string(), code],
+            ..RunOpts::default()
+        })
+        .context("running python")?;
+    emit(&result.stdout, &result.stderr)?;
+    Ok(exit_code_of(result.exit_code))
+}
+
+/// Resolve the Python-in-wasm artifact: `AGENT_PYTHON_WASM`, else a repo-local default.
+fn python_wasm_path() -> anyhow::Result<PathBuf> {
+    if let Ok(p) = std::env::var("AGENT_PYTHON_WASM") {
+        return Ok(PathBuf::from(p));
+    }
+    Ok(PathBuf::from("wasm/python.wasm"))
+}
+
+/// Stream a run's captured output to this process's stdout/stderr.
+fn emit(stdout: &[u8], stderr: &[u8]) -> anyhow::Result<()> {
+    std::io::stdout().write_all(stdout)?;
+    std::io::stderr().write_all(stderr)?;
+    Ok(())
+}
+
+/// Map a guest exit code into a process [`ExitCode`] (a non-`u8` code clamps to 1).
+fn exit_code_of(guest: i32) -> ExitCode {
+    ExitCode::from(u8::try_from(guest).unwrap_or(1))
 }
 
 /// Initialize stderr logging, filtered by the resolved log directive. **stdout stays reserved
@@ -253,5 +366,13 @@ mod tests {
         };
         let name: DetectorName = "mock".parse().expect("valid name");
         assert!(artifact_path(&cfg, &name).ends_with("mock_detector.wasm"));
+    }
+
+    // P1.6: the exit-code contract is `0` clean · `1` findings · `2`+ error. The `2` arm lives
+    // in `main`'s `Err` branch; this pins the `Outcome → code` half.
+    #[test]
+    fn outcome_maps_to_exit_code() {
+        assert_eq!(Outcome::Clean.code(), 0);
+        assert_eq!(Outcome::Detected.code(), 1);
     }
 }

@@ -1,4 +1,4 @@
-//! P3.3 — instance-lifecycle budgets, enforced by the gate as **generous absolute ceilings**.
+//! Instance-lifecycle budgets, enforced by the gate as **generous absolute ceilings**.
 //!
 //! Never run-to-run diffs: shared CI runners make relative perf comparisons flaky, so these are
 //! fixed thresholds with orders of magnitude of headroom. A breach is a real regression — the

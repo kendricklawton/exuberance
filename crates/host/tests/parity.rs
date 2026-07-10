@@ -1,4 +1,4 @@
-//! P3.4 — the seam is honest. `agent check` now runs the mock **through wasmtime**; the native
+//! The seam is honest. `agent check` now runs the mock **through wasmtime**; the native
 //! `agent_abi::mock` rule stays only as the test double. This golden proves the two paths return
 //! **byte-identical** verdicts for the same input — so swapping the CLI onto the wasm runtime
 //! changed the execution path, not the result.

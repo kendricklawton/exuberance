@@ -63,11 +63,17 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-      # Every detector source must compile to wasm — mirrors the artifact step folded into
-      # `cargo xtask ci` (P2.3). Not executed until the Phase-3 runtime exists; this only proves
-      # it builds. The wasm target was installed above.
-      - name: Build detector artifacts (wasm)
-        run: cargo xtask build-detectors
+      # Build every detector to wasm and run its `cases/` goldens through the host runtime — a
+      # detector change that shifts a verdict fails here unless its goldens are updated (P4.3).
+      # `goldens` builds the artifacts first, so this covers the P2.3 build step too. wasm target
+      # installed above.
+      - name: Detector artifacts + goldens
+        run: cargo xtask goldens
+
+      # Enforce each detector's agent.toml budgets (wasm size, p99 latency, declared labels)
+      # against the artifacts built by the goldens step above (P4.4).
+      - name: Detector budgets
+        run: cargo xtask budgets
 
   features:
     name: feature matrix

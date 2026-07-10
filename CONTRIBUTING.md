@@ -1,111 +1,112 @@
 # Contributing
 
-Thanks for your interest. **agent** (working name) is a guardrail-detection kernel in
-Rust: tiny classifiers (prompt-injection, PII, secrets, toxicity) compiled into
-**portable, signed WASM artifacts** that run identically everywhere — embedded via
-wasmtime, at the edge, in a browser. **It detects and cites; it never decides.**
+Thanks for your interest. **agent** (working name) is a self-hostable, isolated
+**code-execution sandbox**: untrusted code runs in a **Firecracker** microVM (KVM hardware
+isolation), and **host-side eBPF** (**aya**) observes and enforces what it does — syscalls, its
+network, its cgroup — from outside the guest. It's built in the open as a **Linux-internals
+deep-dive**: every phase ships a working demo and a writeup.
 
-> Read [**`.rules`**](./.rules) first — the operating manual and the invariants that
-> must never be traded away (`CLAUDE.md`, `AGENTS.md`, and `GEMINI.md` all point
-> there). The staged plan is in [**`ROADMAP.md`**](./ROADMAP.md).
+> Read [**`.rules`**](./.rules) first — the operating manual and the invariants that must never
+> be traded away (`CLAUDE.md` and `AGENTS.md` both point there). The staged plan is in
+> [**`ROADMAP.md`**](./ROADMAP.md); its checkboxes are the state.
 
 ## Prerequisites
 
-- **Rust, stable** ([install `rustup`](https://www.rust-lang.org/tools/install)),
-  plus the `wasm32-unknown-unknown` target (`rustup target add
-  wasm32-unknown-unknown`) for building detector artifacts. No nightly, no `sudo`.
-- **No API keys — ever.** The detection path needs none by design, and the mock
-  detector keeps every command, test, and demo keyless and offline.
+This is **Linux-only** (it needs KVM). You'll need:
+
+- **A Linux host with `/dev/kvm`** and your user in the `kvm` group (or root). A reasonably
+  recent kernel with **BTF** is required for CO-RE eBPF (most modern distros ship it).
+- **Rust, stable** ([`rustup`](https://www.rust-lang.org/tools/install)) for the host/driver.
+  The eBPF programs additionally need **`bpf-linker`** and the aya build toolchain
+  (`cargo install bpf-linker`; the eBPF crate targets `bpfel-unknown-none`).
+- **`firecracker`** + its **jailer** binary (pinned version — see below), a guest **kernel
+  image** (`vmlinux`), and the ability to build a minimal **rootfs**.
+- **Elevated capabilities** for the parts that touch the kernel: creating **tap** devices
+  (`CAP_NET_ADMIN`) and loading eBPF (`CAP_BPF`/`CAP_PERFMON`, or root). Day-to-day dev uses an
+  `xtask`/`just` wrapper so it isn't `sudo cargo` roulette.
+
+`cargo xtask setup` checks the host can do KVM + eBPF and reports what's missing.
 
 ## Quick start
 
 ```console
 git clone <repo> && cd <repo>
+cargo xtask setup            # verify KVM, BTF, firecracker, bpf-linker, caps
 cargo build
 
-# Build the detector artifacts first — `check` runs them as wasm through the host runtime:
-cargo xtask build-detectors
+# Boot a microVM and read its console (ROADMAP Phase 1):
+cargo run -p agent-cli -- run --demo-boot
 
-# The mock detector is the keyless default — no keys, no network, no registry:
-cargo run -p agent-cli -- check --detector mock "text to scan"          # rendered Verdict
-cargo run -p agent-cli -- check --detector mock --format json < file    # wire output; exit 1
+# Later: run a command inside a microVM and capture its output (Phase 2+):
+cargo run -p agent-cli -- run -- python -c 'print(2 + 2)'
+
+# Later still: run it and print the eBPF-observed flight recorder (Phase 13+):
+cargo run -p agent-cli -- run --trace -- <cmd>
 ```
-
-Point `check` at installed artifacts with `--config`, `AGENT_ARTIFACT_DIR`, or a config file;
-the default resolves from where `cargo xtask build-detectors` writes.
-
-Config is layered **flags > env (`AGENT_*`) > file (TOML) > defaults**. Exit codes
-are contract: `0` clean · `1` detection fired · `2`+ operational error.
 
 ## Before you push — the local gate
 
 ```console
-cargo install cargo-deny cargo-hack   # one-time: the gate shells out to both
-cargo xtask ci                        # fmt + clippy -D warnings + build + test + docs
-                                      # + feature powerset + deny + artifact goldens
+cargo install bpf-linker cargo-deny cargo-hack   # one-time
+cargo xtask ci                                    # fmt + clippy -D warnings + build + test
+                                                  # + docs + deny + the eBPF object build
 ```
 
-The gate also **builds every `detectors/*` source to wasm and runs its golden
-verdicts** — a detector change that shifts a verdict fails CI unless its goldens
-are updated in the same change. CI mirrors the gate on `ubuntu-latest` with no
-secrets.
+`cargo xtask ci` runs the host-safe gate everywhere: fmt · clippy `-D warnings` · build · unit
+tests · docs · `cargo deny` · and it **builds the eBPF programs** for their own target so a
+verifier-breaking change fails fast.
+
+**The privileged tests are separate.** Booting a microVM and loading/attaching eBPF need
+`/dev/kvm` and elevated caps, so the **integration tests** (VM boot, exec, tap networking,
+probe attach) are marked and run under `cargo xtask ci-privileged` on a machine that has them
+(your dev box, or a bare-metal/nested-virt CI runner — a stock cloud VM usually can't nest KVM).
+Never gate the everyday loop on a privileged runner.
 
 ## The testing approach
 
-Everything runs **offline and keyless**:
-
-1. **Unit / pure:** ABI encode/decode, config precedence, span math, verdict
-   rendering — table-driven, no network.
-2. **Golden verdicts per detector:** `detectors/*/cases/` pairs input text with the
-   expected `Verdict` JSON; run against the *built artifact* by the gate.
-3. **Determinism tests:** the same input × 100 runs × two targets must produce
-   byte-identical verdicts; learned detectors additionally prove cross-architecture
-   identity (quantized math).
-4. **Eval scorecards (Phase 6):** precision/recall on public corpora, CI-generated,
-   with a regression fence — quality drops fail the gate.
+1. **Unit / pure:** driver config assembly, protocol framing, policy-map encoding, error
+   mapping — no VM, no root.
+2. **eBPF object build:** the probes compile for `bpfel-unknown-none` in the gate; a program the
+   verifier would reject fails the build.
+3. **Privileged integration:** boot a real microVM → `exec` → tap networking → attach probes →
+   assert the flight recorder shows exactly what the workload did. Needs KVM + caps.
+4. **Benchmarks:** cold boot, snapshot restore, warm-pool `exec` latency (p50/p99), density, and
+   probe overhead — reported with percentiles, tracked over time.
 
 ## The invariants (never trade these away)
 
-- **Agnostic by ABI, not by host or detector.** A new detector, inference
-  technique, or host language is a new artifact/SDK behind the frozen contract —
-  never a special case in the kernel.
-- **Detects, never decides.** No policy (block/redact/route) in the kernel; spans
-  are lossless so the *host* can act.
-- **Deterministic by absence.** No clocks, randomness, network, or filesystem
-  inside the sandbox; an artifact importing anything beyond the ABI fails to load.
-- **Measured, not marketed.** Scorecards are CI-generated; hand-written accuracy
-  claims are forbidden.
-- **The wire contract is sacred.** `Verdict` JSON + exit codes are golden-tested
-  and evolve additively-only.
-- **No LLM code, no model keys, no secrets.** Fixture credentials are synthetic
-  only — never real, not even revoked.
-- **No-panic discipline.** `unwrap`/`expect`/`panic!` denied outside tests; every
-  failure is a typed value.
-- **Artifacts are source.** Wasm binaries are built by the gate, signed at
-  release — never hand-committed.
+- **Isolation is hardware.** Untrusted code runs in a KVM microVM; the trust boundary is the
+  CPU, not guest-side software.
+- **Observe & enforce from the host.** Visibility and policy live in host-side eBPF the guest
+  can't reach; in-guest agents are for convenience (exec/IO), never for security.
+- **Engine, not platform.** A self-hostable runtime + a driver API. Auth, billing, fleet
+  scheduling, and dashboards are **out of scope** — the hoster's job.
+- **Deny by default.** A sandbox with no explicit policy reaches no network and holds minimal
+  capability; every allowance is explicit and recorded.
+- **No-panic on the host path.** A hostile or crashing guest, a failed probe, or a broken
+  channel is a typed error — never a host panic, hang, or leak.
+- **Measured, not marketed.** Boot/restore/density/overhead are benchmarked with percentiles.
+- **Teach as you go.** Every phase ships a writeup; the *why* is a first-class deliverable.
 
 ## Phases & decisions
 
-Work is organized into sequentially-gated phases in [`ROADMAP.md`](./ROADMAP.md) —
-the **single source of truth for progress**. Its checkboxes are the state: work the
-first unchecked box in ID order, one item per iteration, and check the box **in the
-same commit** as the work (referencing the ID, e.g. `P3.2: …`). A phase isn't left
-until its **Exit gate** passes; the next isn't started before that. Items tagged
-`(decision)` record the hard-to-reverse choice in `ARCHITECTURE.md` (consolidated
-in P13.2) so the *why* outlives the diff.
+Work is organized into sequentially-gated phases in [`ROADMAP.md`](./ROADMAP.md) — the **single
+source of truth for progress**. Work the first unchecked box in ID order, one item per
+iteration; a phase isn't left until its **Exit gate** passes (a working demo *and* a writeup).
+Items tagged `(decision)` record the hard-to-reverse choice in `ARCHITECTURE.md` so the *why*
+outlives the diff.
 
 ## Commit & PR conventions
 
-- One logical change per commit; **imperative** subject ("Add the PII detector",
-  not "added the PII detector").
-- **Never add an AI co-author or attribution trailer** — no `Co-Authored-By:
-  Claude …` or similar. Never commit secrets, real credentials (even revoked), or
-  built wasm binaries.
-- A new detector is a new `detectors/` directory (source + manifest + goldens),
-  never a runtime special case.
-- Every PR must pass the full gate (`cargo xtask ci`).
+- One logical change per commit; **imperative** subject describing **what was done** ("Boot a
+  microVM from the driver", not "added VM boot"). Don't reference roadmap phase IDs — the
+  roadmap can change.
+- **Never add an AI co-author or attribution trailer** — no `Co-Authored-By: Claude …` or
+  similar. Never commit built rootfs/kernel images or generated eBPF objects.
+- Every PR must pass the host-safe gate (`cargo xtask ci`); privileged integration runs where
+  KVM + caps exist.
 
 ## License
 
-By contributing you agree your contributions are licensed under **Apache-2.0**, the
-project's license (see [`LICENSE`](./LICENSE)).
+By contributing you agree your contributions are licensed under **Apache-2.0**, the project's
+license (see [`LICENSE`](./LICENSE)).

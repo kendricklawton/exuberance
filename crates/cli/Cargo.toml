@@ -16,6 +16,8 @@ path = "src/main.rs"
 # `Verdict` type to render, but no longer the native `mock` rule — that stays a test double.
 agent-abi = { path = "../abi" }
 agent-host = { path = "../host" }
+# The code sandbox: `agent run` / `run-python` execute untrusted wasm in the WASI runner.
+agent-sandbox = { path = "../sandbox" }
 clap = { workspace = true }
 anyhow.workspace = true
 serde_json.workspace = true

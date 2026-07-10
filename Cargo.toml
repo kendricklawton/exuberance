@@ -4,6 +4,8 @@ members = [
     "crates/abi",
     "crates/host",
     "crates/cli",
+    "crates/detectors",
+    "crates/sandbox",
     "xtask",
 ]
 # Detector artifacts build for `wasm32-unknown-unknown`, not the host triple, and carry the

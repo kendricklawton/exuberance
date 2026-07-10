@@ -19,4 +19,4 @@ pub use abi::{AbiError, ABI_VERSION};
 #[cfg(feature = "mock")]
 pub use detector::mock;
 pub use detector::Detector;
-pub use verdict::{Finding, Provenance, Span, Verdict};
+pub use verdict::{Finding, Provenance, Severity, Span, Verdict};

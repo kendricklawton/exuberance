@@ -9,6 +9,16 @@ publish = false
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+# The golden harness loads each built artifact through the real host runtime and compares the
+# returned `Verdict` to the committed expectation — so goldens run against the *artifact*, not a
+# native shortcut. Dev-only; never on the detection path.
+agent-host = { path = "../crates/host" }
+agent-abi = { path = "../crates/abi" }
+serde_json.workspace = true
+# Per-detector `agent.toml` manifests (labels + size/latency budgets), parsed and enforced by the
+# budgets step of the gate (P4.4).
+serde = { workspace = true }
+toml.workspace = true
 
 [lints]
 workspace = true

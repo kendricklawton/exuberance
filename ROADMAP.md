@@ -1,387 +1,375 @@
 # Roadmap
 
+> **What we're building:** a self-hostable, isolated **code-execution sandbox** — **Firecracker**
+> microVMs for hardware isolation, **aya/eBPF** for observability and network policy at the *host*
+> boundary (where the guest can't tamper with you). Run untrusted code in a microVM; watch and
+> enforce what it does from the kernel, outside the guest.
+>
+> **Why:** this is a **Linux-mastery vehicle** on the path to Principal Platform Engineer — not a
+> business. Firecracker + aya together teach Linux from the hardware-isolation boundary up to the
+> syscall/network boundary: the rarest, hardest-to-fake systems depth on a platform team. **Every
+> phase ships a working demo, a Linux-internals lesson worth a blog post, and a design-doc seed.**
+>
+> **The line (K8s is not a PaaS, and neither is this):** we build the **engine** — a runtime you
+> self-host. Multi-tenant auth, billing, scheduling across a fleet, a web dashboard — **out of
+> scope**, the hoster's job. `containerd`, not Docker Cloud.
+>
+> This file is the **single source of truth for progress**. Its checkboxes are the state.
+
 ## §0 The spine
 
-**`agent` (working name) is a guardrail-detection kernel (Rust + WASM).** Tiny classifiers —
-prompt-injection, PII, secrets, toxicity/jailbreak — compiled into **portable, signed WASM
-artifacts** that run *anywhere*: embedded in a Rust/Go/Python service via **wasmtime**, in an
-edge worker, in a proxy hot path, in a browser. One artifact, one frozen ABI, identical
-verdicts everywhere. The guardrail *market* is saturated at the service/library layer
-(Lakera, llm-guard, NeMo Guardrails); nobody ships the detector as a **portable artifact**.
-The wedge is the packaging, not the classifier.
+Four properties every phase must protect:
 
-The shape is **ports & adapters**: a headless **host runtime** (`agent-host`, wasmtime
-embedding with fuel/memory/epoch limits) drives one contract — the **Detector ABI** — over
-which every detector artifact plugs in. A canonical **`Verdict`** wire type sits in the
-middle: labels, scores, spans, and **provenance** (detector id + version + threshold + eval
-scorecard). Every **surface** (the `agent` CLI now; SDKs and a sidecar later) only *renders*
-what the runtime returns — no surface reaches into an artifact directly. The kernel does
-**detection only**: policy (block/allow/redact/route) is the control plane's job — ⟐ the Go
-suite (`operator`) loads these artifacts and decides; this repo never does. The operating
-manual is [`.rules`](./.rules); hard-to-reverse decisions land in `ARCHITECTURE.md`.
-
-Three keystones hold it up:
-
-1. **The artifact is the product — agnostic by ABI, never by host.** A detector is a signed,
-   versioned `.wasm` implementing the frozen ABI and nothing else; a new detector, a new
-   inference technique, or a new host language changes **zero kernel code**. Hosts are
-   swappable (wasmtime server-side, web runtime in the browser, any WASI-compliant edge);
-   detectors are swappable (rules-based, linear, tiny-transformer — the ABI doesn't care).
-   If a change makes the runtime special-case one detector or one host, the design is wrong.
-2. **Deterministic, local, private — by construction.** Same input + same artifact → the
-   **same verdict**, every time, on every host: no wall-clock, no randomness, no network in
-   the detection path — the sandbox has no way to phone home *because the imports aren't
-   there*. Detection runs where the data already is; nothing leaves the process. Every
-   verdict carries provenance, and every artifact ships with its **eval scorecard**
-   (precision/recall on public corpora, measured in CI): **measured, not marketed**.
-3. **The differentiator is packaging + the feed — never the classifier.** Classifiers are
-   commodity research; the moat is (a) the **stable ABI + toolchain** that turns any small
-   model into a portable artifact, (b) **signed, content-addressed distribution** with
-   versioning and rollback, and (c) — the open-core seam — a **continuously retrained
-   artifact feed** (the virus-definitions model: attacks evolve, subscribers get fresh
-   detectors; the runtime and reference detectors stay OSS forever). If a change turns this
-   into one more guardrail *service*, it has lost its reason to exist.
-
-The discipline test for every step: *"does this make detection more portable, more
-deterministic, or better measured — without adding network to the hot path, LLM code, or
-policy logic to the kernel?"* If no, it sinks to a later phase — or out entirely. **The mock
-detector keeps every phase keyless, offline, and toolless.** We do not start a phase until
-the one before it is green on the gate.
-
----
+1. **Isolation is hardware, not software.** Untrusted code runs in a Firecracker microVM (KVM).
+   The host trusts the CPU boundary, not the guest.
+2. **Observe & enforce from the host.** Visibility and policy live in **host-side eBPF** (syscalls,
+   the microVM's tap device, its cgroup) — the guest cannot see or subvert them.
+3. **Engine, not platform.** A self-hostable runtime + a clean driver API. No auth/billing/
+   dashboard/fleet-scheduler in this repo (tombstone: that's the hoster's).
+4. **Measured, and taught.** Boot time, density, and eBPF overhead are benchmarked, not claimed;
+   every phase produces a writeup so the learning outlives the diff.
 
 ## §0.5 How to work this roadmap (the working loop)
 
-*(Terminology: `agent` is this project's name; "the coding agent" below means the AI
-assistant working this file. Where a sentence could read either way, it says which.)*
+- **Sequentially gated.** Never start a phase before the prior phase's **Exit gate** passes.
+- **First unchecked box, in ID order.** One item per iteration.
+- **Two tracks, one spine.** **FC** (Firecracker) and **BPF** (aya/eBPF) can be learned somewhat
+  in parallel, but the **Convergence** phases need both, so the gate order still holds.
+- **Every phase exits on a demo + a lesson.** The exit gate is "I can show it running *and* write
+  up the Linux mechanism it taught me."
+- **Hard-to-reverse choices** (tagged `(decision)`) land as dated entries in `ARCHITECTURE.md`.
+- **Git is human-driven.** The user makes every commit/branch/push; the coding agent's job ends at
+  changes made, demo working, box checked in the working tree.
 
-This file is the **single source of truth for progress**. The checkboxes are the state; no
-other tracker exists. **Every box below is unchecked and the count starts at zero: the repo's
-prior code belongs to a retired project and is ignored — audit nothing, inherit nothing;
-Phase 1 scaffolds fresh.** Work it as a loop:
+## §0.75 Dev environment (one-time)
 
-1. **Locate.** The current item is the first unchecked box in the lowest-numbered phase with
-   unchecked boxes. Work strictly in ID order (`P3.2` before `P3.3`) unless a box says
-   otherwise.
-2. **Implement exactly the item.** One item ≈ one iteration ≈ one reviewable change. Don't
-   reach ahead into later items "while you're in there" — that's how phases bleed together.
-3. **Gate.** `cargo xtask ci` must be green before an item is done (fmt · clippy
-   `-D warnings` · build · test · docs · feature powerset · `cargo-deny`, plus — once P2.3
-   lands them — detector artifact builds + goldens; all keyless and offline). An item whose
-   box mentions a test or doc isn't done until that test/doc exists.
-4. **Check the box in the same commit as the work**, and reference the ID in the commit
-   message (e.g. `P4.2: fuel + epoch limits on every instantiation`). A checked box with no
-   commit behind it is a lie; a landed change with an unchecked box is invisible.
-5. **Advance.** A phase is done only when its **Exit gate** line passes end-to-end. Never
-   start phase N+1 before phase N's exit gate is green.
-
-**Epics.** An item tagged `(epic)` is too big for one iteration: before implementing, expand
-it in-place into lettered sub-boxes (`P5.2a`, `P5.2b`, …) sized to one iteration each — that
-expansion is itself one iteration — then work the sub-boxes.
-
-**Decision items** are tagged `(decision)`: they produce a dated entry in `ARCHITECTURE.md`
-(the decision, the alternatives, the why) and get checked when it's merged.
-
-**When the map is wrong.** If an item turns out to be obsolete, mis-scoped, or blocked by a
-decision above your pay grade: don't silently skip it and don't silently do something else.
-Edit this file (reword / split / move the item) in its own commit with a one-line rationale,
-or stop and ask. The roadmap must always describe reality.
+A modern Linux box with `/dev/kvm` (the dev machine already has a bleeding-edge kernel + BTF —
+ideal for both KVM and CO-RE eBPF). Prerequisites the first phase pins down: the `firecracker`
+binary + jailer, a guest kernel (`vmlinux`), a way to build a rootfs, and the aya toolchain
+(`bpf-linker`, the `bpfel-unknown-none` target, `CAP_BPF`/root for loading).
 
 ---
 
-## Phase 1 — Fresh workspace + the ABI + canonical `Verdict` + mock detector
-Goal: the contract everything else implements, provable offline — a fresh workspace, the
-Detector ABI pinned as a spec, the `Verdict` wire type, and a mock artifact + CLI demo so
-the whole pipeline is visible end-to-end before any real model exists.
+## Phase 0 — Reset the repo to the sandbox engine
 
-- [x] **P1.1** Fresh workspace scaffold: `crates/abi` (contract + `Verdict` types),
-      `crates/host` (runtime, Phase 3), `crates/cli`, `detectors/` (artifact sources),
-      `xtask`. The retired project's **code** — its `crates/*`, `data/`, and manifests —
-      is removed in this same step (the docs were already rewritten 2026-07-08); `xtask` is
-      **kept and retargeted** (its `ci()` gate is project-neutral). The repo describes exactly
-      one project again.
-- [x] **P1.2** (decision) **ABI v0 shape:** WASM **component model (WIT)** vs plain core-wasm
-      exports (`alloc` / `detect(ptr,len) → ptr`). Decide for reach (browser + edge runtimes
-      lag components) vs ergonomics (WIT typed interfaces); record the migration story for
-      whichever loses. The ABI is versioned from day one (`abi_version` export).
-- [x] **P1.3** Canonical **`Verdict`** in `crates/abi`: labels + scores + byte-offset spans +
-      provenance (detector id, semver, threshold, scorecard hash). `#[non_exhaustive]`,
-      constructors, **serde-stable field naming** (explicit `rename_all`, additive-only
-      evolution), and a round-trip test pinning the JSON shape — it will be serialized by
-      the CLI, three SDKs, and a sidecar; a breaking wire change after hosts script against
-      it is not cheap.
-- [x] **P1.4** The **mock detector**: a trivial rules artifact (fixed keyword hits) built
-      from `detectors/mock/` by `xtask` to whatever wasm target the P1.2 decision fixed
-      (`wasm32-unknown-unknown` if core-wasm won), checked in as source (never as a binary
-      blob). It is the permanent keyless fixture every later phase tests against.
-- [x] **P1.5** `agent check --detector mock "some text"` — parses the text, returns a rendered
-      `Verdict` (and `--json`), **without wasmtime yet**: the mock runs via a native
-      `Detector` trait impl proving the abstraction before the runtime exists.
+Turn `agent` from the wasm scanner into the Firecracker + aya sandbox; keep the git history.
 
-**Exit gate:** all P1 boxes checked · `cargo xtask ci` green · `agent check --detector mock`
-renders a cited `Verdict` offline, keyless, toolless · the JSON round-trip test pins the wire
-shape.
+- [ ] **P0.1** (human git step) Shelve the wasm/scanner work on a branch, then gut `main`: remove
+      `crates/{abi,host,detectors,sandbox}`, `detectors/`, the scanner `ROADMAP` history is in git.
+- [ ] **P0.2** New workspace layout: `crates/vmm` (Firecracker driver), `crates/probes` (aya
+      eBPF programs, `no_std`), `crates/probes-loader` (userspace loader), `crates/cli` (`agent`),
+      `xtask`.
+- [ ] **P0.3** Rewrite `.rules` / `README.md` / `ARCHITECTURE.md` to the sandbox-engine identity
+      and the four spine properties; drop the detector/`Verdict`/feed framing.
+- [ ] **P0.4** Pin prerequisites in `README`: `firecracker`+jailer version, guest `vmlinux`
+      source, rootfs recipe, aya toolchain (`bpf-linker`, target, caps). A `make setup` / `xtask
+      setup` that checks them.
+- [ ] **P0.5** `cargo xtask ci` skeleton: fmt · clippy `-D warnings` · build · test · docs (the
+      eBPF crate builds for its own target, gated separately — see P8).
+- [ ] **P0.6** Decide + record the naming (keep `agent` umbrella vs a codename) — cheap, do it once.
+- [ ] **P0.7** `CHANGELOG.md` reset; a short `docs/` for the blog-series drafts each phase feeds.
+- [ ] **P0.8** A `justfile`/`xtask` target to run the whole thing needing root/`CAP_*` cleanly
+      (so day-to-day dev isn't `sudo cargo` roulette).
+- **Exit gate:** `cargo xtask ci` green on an empty-but-scaffolded tree; `xtask setup` verifies the
+  host can do KVM + eBPF; docs describe the engine, not the scanner.
 
-## Phase 2 — Config, CI & xtask scaffolding
-Goal: the 12-factor + rigor substrate, before any real I/O — every later phase inherits the
-gate instead of relitigating discipline by hand.
+---
 
-- [x] **P2.1** Layered `Config` (**flags > env (`AGENT_*`) > file (TOML) > defaults**) with a
-      pure `resolve()` fold and precedence pinned by unit tests; detector/artifact selection
-      is config, not code. **This tool holds no secrets** — there is no API key to read,
-      and no phase may add one to the detection path.
-- [x] **P2.2** `tracing` logs to **stderr**, filtered by config; stdout reserved for
-      verdicts, so `agent check … 2>/dev/null` stays pipe-clean. Exit codes are part of the
-      wire contract: `0` clean · `1` detection fired · `2`+ operational error.
-- [x] **P2.3** `cargo xtask ci` — the local gate: fmt · clippy `-D warnings` · build · test ·
-      docs (`RUSTDOCFLAGS=-D warnings`) · feature powerset (`cargo-hack`) · `cargo-deny` ·
-      **artifact build** (every `detectors/*` source **compiles** to wasm; goldens run via
-      the P1.5 native path for now — they switch to executing the built artifact in P3.4,
-      once a runtime exists to run wasm at all). Keyless, offline, stops at the first
-      failure.
-- [x] **P2.4** A GitHub Actions workflow mirroring the gate step-for-step, plus one aggregate
-      required status check so branch protection needs a single rule.
+## Firecracker track — hardware isolation
 
-**Exit gate:** all P2 boxes checked · gate green locally **and** in CI with no secrets ·
-precedence tests pin flags > env > file > defaults · a deliberately non-compiling mock
-detector fails the artifact-build step.
+## Phase 1 — Boot a microVM from Rust
 
-## Phase 3 — The host runtime (`agent-host`, wasmtime)
-Goal: the irreversible shape decision — the sandboxed execution environment every artifact
-runs in, made while mock-only (cheap now, expensive after real detectors exist).
+The "hello, KVM" moment: a program that boots a real Linux microVM and reads its console.
 
-- [x] **P3.1** wasmtime embedding: load + instantiate an ABI-conformant artifact; **fuel
-      metering** (bounded compute per call), **memory limits**, and **epoch interruption**
-      (wall-clock kill switch) on every instantiation — a hostile or buggy artifact is a
-      contained error, never a hang or a resource leak.
-- [x] **P3.2** **Determinism enforced by absence:** the linker exposes *no* WASI clocks, no
-      randomness, no network, no filesystem — an artifact that imports anything beyond the
-      ABI fails to load with a clear typed error. A determinism test runs the same input 100×
-      and asserts byte-identical verdicts; the **CI matrix** repeats it on a second OS/arch
-      runner (the local gate is single-machine and can't — don't block on it locally).
-- [x] **P3.3** Instance lifecycle for the hot path: pooled instantiation (or
-      instance-per-call — measure, then decide `(decision)`), pre-compiled module caching,
-      and a micro-benchmark harness pinning **p99 per-call latency and cold-start budgets**
-      as **generous absolute thresholds** the gate enforces (never run-to-run diffs — shared
-      CI runners make relative perf comparisons flaky; a budget breach is red, noise is not).
-- [x] **P3.4** `agent check` now runs the mock **through wasmtime** — the native-trait path
-      from P1.5 stays as the test double; both must return identical verdicts (a golden test
-      proves the seam is honest).
+- [ ] **P1.1** `(decision)` how to drive Firecracker: its **HTTP API over a unix socket** vs the
+      `firecracker` binary vs embedding `rust-vmm` crates → `ARCHITECTURE.md`. (Default: API socket.)
+- [ ] **P1.2** Fetch/pin a guest kernel (`vmlinux`) and a minimal rootfs image for first boot.
+- [ ] **P1.3** `crates/vmm`: start a `firecracker` process with a jailer-free config for dev;
+      talk to its API socket.
+- [ ] **P1.4** Configure the boot source (kernel + boot args) and a root block device via the API.
+- [ ] **P1.5** Set the machine config (vcpus, mem) and `InstanceStart`.
+- [ ] **P1.6** Capture the serial console to the host; assert the guest reached userspace.
+- [ ] **P1.7** Clean shutdown + teardown (kill VMM, remove socket/artifacts); no leaks between runs.
+- [ ] **P1.8** A `Vm::boot(config) -> RunningVm` / `RunningVm::shutdown()` API over all of the above.
+- [ ] **P1.9** Timing: measure and log boot-to-userspace latency (the number that matters).
+- [ ] **P1.10** Test: boot → see the login/init banner → shut down, repeatable.
+- **Exit gate + lesson:** a microVM boots to userspace from `cargo run` and shuts down clean; write
+  up the **boot protocol** (kernel + boot args + virtio-block rootfs) and the microVM lifecycle.
 
-**Exit gate:** all P3 boxes checked · gate green · the same artifact returns byte-identical
-verdicts across 100 runs locally and across the CI matrix's second target · a fuel-bomb
-artifact (infinite loop) is killed and surfaces as a typed error · benchmark budgets are
-recorded in-repo.
+## Phase 2 — Run code in the guest & get results back
 
-## Phase 4 — First real detectors (pattern class: secrets + PII)
-Goal: the first artifacts with real utility — the *deterministic-by-nature* detector class
-(pattern + entropy + validation), pure Rust compiled to wasm. No ML yet: prove the artifact
-pipeline on detectors whose correctness is testable to the byte. (Batch/single-pass only —
-stream sessions are Phase 8; don't build stream state here.)
+Turn "a VM boots" into "I handed it a command and captured stdout + exit code."
 
-- [ ] **P4.1** `detectors/secrets`: single-pass pattern + entropy detection for credentials
-      (cloud keys, tokens, private-key headers), with span-accurate offsets and per-pattern
-      sub-labels in the `Verdict`. Corpus: synthetic fixtures only — **never real keys**,
-      not even revoked ones.
-- [ ] **P4.2** `detectors/pii`: emails, phone numbers, government-ID shapes, IP addresses —
-      validation-aware (checksums where they exist) to hold precision. Locale scope for v0
-      is `(decision)`-documented: US/EU shapes first, extension is additive.
-- [ ] **P4.3** The **golden-verdict harness**: every detector directory carries
-      `cases/*.txt` + expected-verdict JSON; `xtask` runs them against the built artifact.
-      Adding a detector = source + cases, never runtime changes.
-- [ ] **P4.4** Size/latency budgets become per-artifact manifests (`agent.toml`): max wasm
-      bytes, max p99 µs — enforced by the gate, recorded in the scorecard.
+- [ ] **P2.1** `(decision)` host↔guest channel: **vsock** vs a serial protocol vs a guest agent →
+      `ARCHITECTURE.md`. (Default: vsock + a tiny guest agent.)
+- [ ] **P2.2** A minimal **guest init/agent** (statically-linked Rust) that runs a command and
+      reports stdout/stderr/exit over the channel.
+- [ ] **P2.3** Wire vsock in the VMM config; host side connects and speaks the protocol.
+- [ ] **P2.4** `RunningVm::exec(cmd, stdin) -> {stdout, stderr, exit}`.
+- [ ] **P2.5** Push inputs in (stdin/files) and pull outputs out.
+- [ ] **P2.6** Timeouts + kill: a hung command is bounded and reaps cleanly.
+- [ ] **P2.7** Error taxonomy for the driver (boot failure, channel failure, guest crash) — typed,
+      no panics on the host.
+- [ ] **P2.8** Test: `exec("echo hi")` → `hi`, exit 0; a crashing command → typed error.
+- **Exit gate + lesson:** `agent`-driven `exec` in a microVM returns real output; write up **vsock /
+  guest agents** and how host↔guest comms actually work.
 
-**Exit gate:** all P4 boxes checked · gate green · `agent check --detector secrets` catches a
-fixture AWS key with correct spans and exit code 1 · both artifacts hold their size/latency
-budgets in CI.
+## Phase 3 — Rootfs & the language runtime
 
-## Phase 5 — The ML toolchain + the injection detector (the flagship)
-Goal: the reason the ABI exists — a *learned* classifier (prompt-injection/jailbreak) inside
-the same portable artifact, and the reusable toolchain that turns any tiny model into one.
+Build the disk the guest runs, with a real runtime (e.g. Python) inside — natively, no wasm gymnastics.
 
-- [ ] **P5.1** (decision) **Inference approach inside the artifact:** hand-rolled linear /
-      hashed-n-gram model in pure Rust vs a no-std-friendly inference lib (e.g. tract/candle
-      subset) compiled to wasm. Decide on artifact size, determinism (fixed-point vs float
-      drift across hosts), and toolchain simplicity; record the revisit trigger (if quality
-      plateaus, escalate model class).
-- [ ] **P5.2** (epic) **`agent-train` toolchain** (`crates/train`, dev-only, never shipped
-      in the runtime path): dataset prep (public injection corpora + synthetic augmentation)
-      → train tiny classifier → quantize → embed weights → emit an ABI-conformant wasm
-      artifact + scorecard. Deterministic builds: same data + seed → byte-identical artifact.
-- [ ] **P5.3** `detectors/injection` v0 shipped through that toolchain, with a documented
-      threshold and its scorecard in the manifest.
-- [ ] **P5.4** **Float-determinism audit:** verify verdict-identity across x86/ARM hosts for
-      the learned model (quantized integer math preferred precisely to make this trivially
-      true); the P3.2 determinism test extends to every learned artifact.
+- [ ] **P3.1** Reproducible **rootfs build**: a minimal ext4 image (busybox/alpine or a scratch
+      base) + the guest agent baked in.
+- [ ] **P3.2** Add a language runtime (Python) to the rootfs; prove `exec("python -c 'print(2+2)')`.
+- [ ] **P3.3** Read-only base rootfs + a writable overlay per run (so runs don't mutate the base).
+- [ ] **P3.4** Inject a per-run working dir / files via a second block device or the channel.
+- [ ] **P3.5** Pull artifacts (files the run produced) back out.
+- [ ] **P3.6** Pin the rootfs build in `xtask` so it's one command + reproducible.
+- [ ] **P3.7** Size/boot budget: keep the base small; measure its effect on boot time.
+- [ ] **P3.8** Test: run Python + a small script that writes a file → capture the file.
+- **Exit gate + lesson:** real Python runs in the microVM and produces artifacts; write up
+  **filesystems, ext4 images, overlayfs, and initramfs vs rootfs.**
 
-**Exit gate:** all P5 boxes checked · gate green · the injection artifact classifies the
-held-out fixture set at or above its scorecard numbers, byte-identically on x86 and ARM
-(via the CI matrix) · rebuilding from the same inputs reproduces the artifact hash.
+## Phase 4 — Networking
 
-## Phase 6 — The eval harness (measured, not marketed — in CI)
-Goal: the honesty backstop, standing in CI — every detector's quality is a number computed
-from public corpora, recomputed on every change, and shipped in the artifact's provenance.
+Give the microVM a network with per-VM isolation — the classic tap/bridge lesson.
 
-- [ ] **P6.1** Known-answer evals per detector: public benchmark corpora — documented,
-      license-checked, and **vendored (or committed as a pinned snapshot) so the gate stays
-      offline**; fetching happens in a human-run refresh script, never in CI → precision /
-      recall / F1 per label; the scorecard in each manifest is **generated, never
-      hand-written**.
-- [ ] **P6.2** A **regression fence:** a change that drops any shipped detector's F1 below
-      its floor fails CI — quality regressions are caught like API breaks, not noticed in
-      production.
-- [ ] **P6.3** A false-positive corpus (benign text that *looks* alarming: code, key-shaped
-      strings in docs, security writeups) — precision is the adoption-killer metric for
-      guardrails; measure it explicitly.
+- [ ] **P4.1** Create a **tap device** per VM on the host; attach it as virtio-net in the VMM config.
+- [ ] **P4.2** Address the guest (static or a tiny DHCP) and route host↔guest.
+- [ ] **P4.3** `(decision)` egress model: **NAT to the world** vs **deny-by-default** →
+      `ARCHITECTURE.md`. (Default: deny-by-default; explicit allow later, enforced in BPF track.)
+- [ ] **P4.4** Per-VM isolation: one VM cannot reach another's tap.
+- [ ] **P4.5** Teardown removes the tap + routes; no orphaned interfaces after many runs.
+- [ ] **P4.6** Name/track each tap so the eBPF track can bind policy to a specific VM later.
+- [ ] **P4.7** Test: guest can (optionally) reach an allowed host endpoint; cannot reach a blocked one.
+- [ ] **P4.8** Document the netfilter/routing rules the driver installs.
+- **Exit gate + lesson:** a microVM has controlled network; write up **tap devices, bridges,
+  netfilter/NAT, and virtio-net.**
 
-**Exit gate:** all P6 boxes checked · gate green · every shipped artifact's scorecard is
-CI-generated · a deliberately degraded model fails the fence.
+## Phase 5 — Snapshots & warm start
 
-## Phase 7 — Host SDKs (⟐ the operator seam)
-Goal: prove "runs anywhere" where it matters most — embedded in other people's programs.
-The Rust crate is first-class; Go is the ⟐ pairing (operator's proxies load detectors
-through it); Python covers the ML world.
+The fast-start magic: pause, snapshot, and restore — fork many VMs from one warm image.
 
-- [ ] **P7.1** `agent-host` published as the **Rust SDK**: embed, load artifact, get
-      `Verdict` — three lines; the CLI becomes a pure view over it (it likely already is;
-      prove it with a golden test).
-- [ ] **P7.2** **Go SDK** over wasmtime-go, returning the same wire-stable `Verdict` JSON —
-      ⟐ this is the artifact-loading seam `operator`'s Go control plane consumes; the kernel
-      still knows nothing about policy.
-- [ ] **P7.3** **Python SDK** (wasmtime-py), same contract; golden cross-SDK test: one
-      artifact, one input, three SDKs, byte-identical verdicts.
-- [ ] **P7.4** Version/compat story documented: ABI semver, artifact-manifest minimums,
-      SDK support matrix — additive evolution only, mirroring the `Verdict` discipline.
+- [ ] **P5.1** Pause a booted VM and take a **full snapshot** (memory + state) via the API.
+- [ ] **P5.2** Restore a VM from a snapshot; measure restore latency vs cold boot.
+- [ ] **P5.3** A "warm" snapshot: boot + runtime loaded (e.g. Python imported), snapshot *that*.
+- [ ] **P5.4** Restore N clones from one warm snapshot; each gets a fresh overlay/tap.
+- [ ] **P5.5** Handle the uniqueness problems restore creates (network identity, entropy, clocks).
+- [ ] **P5.6** `Pool` that keeps warm restores ready so `exec` starts in ms.
+- [ ] **P5.7** Benchmark: cold boot vs snapshot restore vs warm-pool `exec` latency.
+- [ ] **P5.8** Test: restore a warm Python snapshot, run code, get output in ≪ cold-boot time.
+- **Exit gate + lesson:** warm restores make runs start in ms; write up **snapshotting, guest
+  memory, and the state you must fix up on restore.**
 
-**Exit gate:** all P7 boxes checked · gate green · the cross-SDK golden test passes in CI
-(Rust + Go + Python against the same artifacts).
+## Phase 6 — Confinement: jailer, cgroups, seccomp
 
-## Phase 8 — Streaming detection
-Goal: the differentiator over batch scanners — verdicts over **token streams** (LLM output
-as it's generated), so a proxy can act mid-stream instead of after the fact.
+Confine the VMM itself — the other half of the isolation story, and pure Linux internals.
 
-- [ ] **P8.1** ABI v0.x extension: stateful sessions (`open → feed(chunk) → close`) with
-      carry-over state inside the artifact, so patterns spanning chunk boundaries are caught;
-      batch `detect` remains the degenerate single-chunk case — one code path, tested as
-      such.
-- [ ] **P8.2** Incremental verdicts: a stream can fire early (secret detected at token 40 —
-      surface it *then*, with the span so far), with a final consolidated `Verdict` at close.
-- [ ] **P8.3** Latency budget per chunk pinned in the benchmark harness — streaming is only
-      real if a chunk verdict fits inside an inter-token gap (single-digit ms, generous).
+- [ ] **P6.1** Run Firecracker under its **jailer** (chroot, uid/gid drop, namespaces).
+- [ ] **P6.2** Put each VMM in its own **cgroup**; set CPU/memory limits.
+- [ ] **P6.3** Apply Firecracker's **seccomp** filters; understand what syscalls it needs.
+- [ ] **P6.4** Resource caps enforced: a VM can't exceed its cgroup memory/CPU.
+- [ ] **P6.5** `(decision)` per-run resource policy shape (the knobs the engine exposes) →
+      `ARCHITECTURE.md`.
+- [ ] **P6.6** Verify isolation: a hostile guest + a hostile-ish workload can't escape the jail.
+- [ ] **P6.7** Clean cgroup/namespace teardown per run.
+- [ ] **P6.8** Test: a fork-bomb / mem-hog in the guest is bounded by the cgroup, host unaffected.
+- **Exit gate + lesson:** the VMM runs jailed + cgroup-limited; write up **namespaces, cgroups v2,
+  seccomp, and capabilities** — the container-isolation primitives, seen through Firecracker.
 
-**Exit gate:** all P8 boxes checked · gate green · a fixture stream chunked at hostile
-boundaries (secret split across three chunks) is caught with correct offsets · chunk-latency
-budget holds in CI.
+## Phase 7 — The sandbox lifecycle API (the engine surface)
 
-## Phase 9 — Edge & browser targets
-Goal: cash the "runs anywhere" check — the *same artifact bytes* verified in a browser and
-an edge-worker runtime, no recompile.
+Wrap the FC track into a clean, self-hostable engine API.
 
-- [ ] **P9.1** A browser demo page (static, no backend): loads a shipped artifact via the
-      web WASM runtime, runs detection fully client-side — the privacy story made visible.
-      If P1.2 chose components, this is where the polyfill/transpile cost is paid and
-      documented.
-- [ ] **P9.2** An edge-worker example (WASI-compliant runtime of one mainstream provider),
-      same artifact bytes, verdict parity asserted against the wasmtime host in a recorded
-      test.
-- [ ] **P9.3** The compatibility matrix (host × ABI feature × artifact) generated into docs —
-      claims about "anywhere" become a table, not adjectives.
+- [ ] **P7.1** `Sandbox` lifecycle: `open → exec → put/get files → snapshot → close`.
+- [ ] **P7.2** Stateful sessions: multiple `exec`s against one VM with a persistent overlay.
+- [ ] **P7.3** Per-sandbox limits (cpu/mem/wall/net policy) as one options struct.
+- [ ] **P7.4** `agent run <cmd>` / `agent shell` CLI over the lifecycle.
+- [ ] **P7.5** Structured run result (stdout/stderr/exit/artifacts/metrics).
+- [ ] **P7.6** Concurrency: many sandboxes at once; a bounded pool; no interference.
+- [ ] **P7.7** Docs: the engine API and the explicit *non-goals* (no auth/billing/scheduler).
+- [ ] **P7.8** Test: two concurrent stateful sessions stay isolated and correct.
+- **Exit gate + lesson:** a clean `Sandbox` engine anyone can embed/self-host; write up **the
+  sandbox-lifecycle contract** and where the engine/PaaS line sits.
 
-**Exit gate:** all P9 boxes checked · gate green · one artifact hash verified byte-identical
-in verdicts across wasmtime, browser, and edge fixtures.
+---
 
-## Phase 10 — Signed distribution & the registry seam
-Goal: artifacts become *distributable* — content-addressed, signed, versioned — and the
-open-core seam gets its structural line: the protocol and tooling are OSS; the continuously
-retrained **feed** is the product.
+## eBPF / aya track — see and enforce from the host
 
-- [ ] **P10.1** Artifact packaging: manifest (`agent.toml` → embedded), content-addressed
-      naming, **keyless signing (sigstore/cosign)** + verification in `agent-host` — an
-      unsigned or tampered artifact is refused by default (config can allow local dev
-      artifacts explicitly).
-- [ ] **P10.2** `agent pull <detector>@<version>` against a dumb static registry (an OCI
-      registry or plain HTTPS index — `(decision)`, lean toward OCI for free infra);
-      lockfile pinning hashes so a deploy is reproducible.
-- [ ] **P10.3** The **feed seam documented**: the OSS tooling speaks to *any* registry; the
-      commercial feed (fresh injection models as attacks evolve) is one more registry URL —
-      additive, never required, and the kernel cannot tell the difference. This is the
-      open-core line; write it into `ARCHITECTURE.md` as the structural decision it is.
+## Phase 8 — aya "hello, verifier"
 
-**Exit gate:** all P10 boxes checked · gate green · a tampered artifact is refused with a
-typed error · `agent pull` + lockfile reproduces an exact artifact set on a clean machine.
+The eBPF on-ramp: build, load, and read a map from a trivial program.
 
-## Phase 11 — ~~Policy engine / redaction actions in the kernel~~ — cut by design
-A tombstone, pre-dug. The kernel **detects and cites; it never decides**. Block/allow,
-redaction, routing, rate responses, tenant policy — all of it belongs to the control plane
-(⟐ `operator`, or whatever host embeds the SDK). The moment policy enters this repo, it
-competes with its own embedders and the guardrail *services* it exists to underlie. What the
-kernel legitimately owns: spans precise enough that a host can redact losslessly. Reviving
-policy here is an explicit re-scope, never drift. The slot is numbered like a real phase so
-the cut is a standing, citable decision — not a silence someone refills later.
+- [ ] **P8.1** `crates/probes` (`no_std`, `bpfel-unknown-none`) + `crates/probes-loader`
+      (userspace, aya) scaffolding; `bpf-linker` wired into `xtask`.
+- [ ] **P8.2** A tracepoint/kprobe that **counts** an event (e.g. `sys_enter_execve`) into a map.
+- [ ] **P8.3** Loader attaches it, reads the map, prints counts.
+- [ ] **P8.4** CO-RE/BTF: build against BTF so it's portable across kernels.
+- [ ] **P8.5** Handle the verifier: bounded loops, map access patterns — learn its rules by hitting them.
+- [ ] **P8.6** `xtask` builds the eBPF object as part of the gate (separate target).
+- [ ] **P8.7** Caps: load with `CAP_BPF` (not full root) where possible; document what's needed.
+- [ ] **P8.8** Test: run a known program, assert the counter moved.
+- **Exit gate + lesson:** a Rust eBPF program loads and reports; write up **eBPF program types,
+  maps, the verifier, and CO-RE/BTF.**
 
-**Exit gate:** none — nothing to verify. Proceed to Phase 12.
+## Phase 9 — Syscall observability
 
-## Phase 12 — Sidecar surface (`agent serve`)
-Goal: the non-embedding on-ramp — a local process boundary for stacks that can't link an
-SDK; a pure view, same contract.
+Trace what a process (a firecracker/vhost worker, or the guest-adjacent host side) actually does.
 
-- [ ] **P12.1** `agent serve`: local HTTP (and optionally gRPC — `(decision)` by demand, not
-      speculation) exposing check/stream over loopback; the same `Verdict` JSON, the same
-      exit-code philosophy mapped to status codes; **loopback-only by default** — this is a
-      sidecar, not a service.
-- [ ] **P12.2** Goldens asserting CLI, SDK, and sidecar return identical verdicts for
-      identical inputs — three surfaces, one engine, provably.
+- [ ] **P9.1** Tracepoints for `execve`/`openat`/`connect` with per-event data via a **ring buffer**.
+- [ ] **P9.2** Filter to a target PID/cgroup (so you watch *one* sandbox's host footprint).
+- [ ] **P9.3** Userspace consumer: stream events, decode, print a live trace.
+- [ ] **P9.4** Attribute events to a sandbox (via cgroup id / PID from the FC track).
+- [ ] **P9.5** Bounded overhead: measure the tracing cost.
+- [ ] **P9.6** Test: launch a workload, assert its `execve`/`open` events show up attributed.
+- **Exit gate + lesson:** a live syscall trace of a running sandbox; write up **tracepoints vs
+  kprobes, ring buffers, and per-cgroup filtering.**
 
-**Exit gate:** all P12 boxes checked · gate green · the parity golden passes across all
-three surfaces.
+## Phase 10 — Network observability on the tap (tc/XDP)
 
-## Phase 13 — Packaging, docs & the benchmark writeup
-Goal: ship it honestly — reproducible releases, a written architecture record, and the
-rigorous public writeup that is this project's marketing.
+Watch every packet a microVM sends/receives — at its tap device, in the kernel.
 
-- [ ] **P13.1** Tag-triggered release: `--locked` builds, checksums, signed artifacts for the
-      reference detector set, SDK publishes (crates.io / Go module / PyPI).
-- [ ] **P13.2** Consolidate `ARCHITECTURE.md` from the accumulated `(decision)` entries; the
-      compatibility matrix and eval scorecards generated into docs.
-- [ ] **P13.3** The **benchmark writeup**: portable-artifact guardrails vs the incumbent
-      Python services — cold-start, p99 latency, memory, deployment surface, determinism —
-      with honest numbers and reproduction scripts. One rigorous post; it is the launch.
+- [ ] **P10.1** Attach a **tc** (or XDP) program to a VM's tap device.
+- [ ] **P10.2** Parse L3/L4 headers; count bytes/packets per direction, per flow.
+- [ ] **P10.3** Export per-VM network stats to userspace via a map.
+- [ ] **P10.4** Bind the program to the *specific* tap the FC track named for a sandbox.
+- [ ] **P10.5** Handle attach/detach cleanly on sandbox open/close.
+- [ ] **P10.6** Test: traffic from a guest shows up in the per-VM counters.
+- **Exit gate + lesson:** live per-microVM network visibility; write up **tc vs XDP, the packet
+  path, and eBPF at the traffic-control layer.**
 
-**Exit gate:** all P13 boxes checked · gate green · a clean machine goes from `git clone` to
-verified signed artifacts + passing evals with one documented command sequence.
+## Phase 11 — Enforcement: egress policy in the kernel
+
+Turn observation into control — deny-by-default egress, allow-listed, enforced at the tap.
+
+- [ ] **P11.1** A policy map (allowed CIDRs/ports) the tc/XDP program consults.
+- [ ] **P11.2** Drop packets that don't match; allow those that do — per VM.
+- [ ] **P11.3** Userspace API to set a sandbox's egress policy at launch.
+- [ ] **P11.4** Deny-by-default: a sandbox with no policy reaches nothing.
+- [ ] **P11.5** Log denials (the audit trail feeds the flight recorder, Phase 13).
+- [ ] **P11.6** `(decision)` where policy lives + its schema (still *engine* mechanism, not org
+      policy) → `ARCHITECTURE.md`.
+- [ ] **P11.7** Test: a guest can reach an allow-listed endpoint and is blocked from everything else.
+- **Exit gate + lesson:** kernel-enforced per-sandbox egress; write up **eBPF as an enforcement
+  plane and why host-side beats in-guest.**
+
+## Phase 12 — Resource accounting via cgroup-bpf
+
+Per-sandbox CPU/mem/IO accounting from the kernel — the metering primitive (engine, not billing).
+
+- [ ] **P12.1** cgroup-attached eBPF (or cgroup + tracepoints) for per-sandbox CPU/mem/IO.
+- [ ] **P12.2** Correlate with the FC track's per-VM cgroup.
+- [ ] **P12.3** Expose a per-run resource summary in the run result.
+- [ ] **P12.4** Bounded overhead; sane under many concurrent sandboxes.
+- [ ] **P12.5** Test: a CPU-heavy run reports higher CPU than an idle one, attributed correctly.
+- **Exit gate + lesson:** per-sandbox resource metrics from eBPF; write up **cgroups v2 + BPF
+  accounting** (and note: the engine *measures*, the hoster *bills*).
+
+---
+
+## Convergence — the fused engine
+
+## Phase 13 — The flight recorder
+
+Attach the eBPF programs to a sandbox at launch and produce a per-run **audit trail**.
+
+- [ ] **P13.1** On `Sandbox::open`, attach syscall + network + accounting probes bound to that VM.
+- [ ] **P13.2** Aggregate into one per-run record: network flows, notable syscalls, resources,
+      egress denials, timing.
+- [ ] **P13.3** Detach + finalize the record on `close`.
+- [ ] **P13.4** Deterministic, structured output (JSON) of "what this run did," from *outside* the guest.
+- [ ] **P13.5** Bound the overhead; keep concurrent sandboxes independent.
+- [ ] **P13.6** Test: run a workload that touches network + files → the record shows exactly that.
+- **Exit gate + lesson:** every run yields a tamper-resistant, host-observed audit trail; write up
+  **the whole picture — microVM + eBPF observability as one system.**
+
+## Phase 14 — Observability output (a face for it)
+
+Make what a run did *legible* — the payoff demo.
+
+- [ ] **P14.1** A live TUI (ratatui) or structured stream: sandboxes, their syscalls, network, resources.
+- [ ] **P14.2** Per-sandbox drill-down: this run's flows, denials, timeline.
+- [ ] **P14.3** `agent run --trace` prints the flight recorder after a run.
+- [ ] **P14.4** Export the record (JSON) for later inspection.
+- [ ] **P14.5** Test/demo: run something interesting, watch it live, read the trace after.
+- **Exit gate + lesson:** a compelling live view of hardware-isolated runs; the demo you show people.
+
+## Phase 15 — Hardening & the trust story
+
+Prove the isolation + observation claims hold under adversarial workloads.
+
+- [ ] **P15.1** Adversarial suite: guest tries to escape/DoS/exfiltrate → contained + recorded.
+- [ ] **P15.2** Confirm the guest cannot see or disable the host-side probes.
+- [ ] **P15.3** Resource-exhaustion, fork-bomb, network-flood → bounded by cgroup + egress policy.
+- [ ] **P15.4** Snapshot-restore correctness under load (no state bleed between clones).
+- [ ] **P15.5** Document the **threat model**: what's trusted (CPU/KVM/host kernel), what isn't.
+- [ ] **P15.6** `(decision)` the security boundary + assumptions → `ARCHITECTURE.md`.
+- **Exit gate + lesson:** the isolation + observability claims survive an adversary; write up the
+  **threat model** — a genuine Principal-level design doc.
+
+---
+
+## Cross-cutting
+
+## Phase 16 — The driver daemon + wire API (the engine's interface)
+
+The containerd-style boundary: a local daemon others drive — still engine, not PaaS.
+
+- [ ] **P16.1** `agentd`: a long-lived daemon exposing the sandbox lifecycle over a unix socket.
+- [ ] **P16.2** A simple wire API (JSON/gRPC — `(decision)`) : open/exec/put/get/snapshot/close/trace.
+- [ ] **P16.3** Warm-pool management lives in the daemon (fast `exec`).
+- [ ] **P16.4** A thin client + a Python/Go binding so non-Rust callers can drive it.
+- [ ] **P16.5** Structured logs + a metrics endpoint (Prometheus) — for the *hoster* to scrape.
+- [ ] **P16.6** Explicitly document the non-goals again at the API layer (no tenancy/auth/billing).
+- [ ] **P16.7** Golden: the CLI and the daemon API produce identical run results.
+- **Exit gate + lesson:** a self-hostable sandbox daemon with a clean API; write up **daemon design,
+  the client/server boundary, and where a PaaS would begin (and why it's not here).**
+
+## Phase 17 — Performance & scale
+
+Make the numbers real — the benchmarks that back every claim.
+
+- [ ] **P17.1** Benchmarks: cold boot, snapshot restore, warm-pool `exec` latency (p50/p99).
+- [ ] **P17.2** Density: how many concurrent microVMs per host before it degrades.
+- [ ] **P17.3** eBPF overhead: cost of the probes under load.
+- [ ] **P17.4** Memory footprint per sandbox; the effect of overlay/rootfs choices.
+- [ ] **P17.5** A reproducible bench harness + a results writeup vs the honest baselines.
+- [ ] **P17.6** Find + fix the top bottleneck the numbers reveal.
+- **Exit gate + lesson:** documented latency/density/overhead numbers; write up **performance
+  methodology** (percentiles, not averages).
+
+## Phase 18 — Packaging, docs & the blog series
+
+Ship it as a thing others can run — and turn the journey into the career artifacts.
+
+- [ ] **P18.1** Single-command self-host: build the rootfs/kernel, install the daemon, run a sandbox.
+- [ ] **P18.2** `curl | sh` / container / release binaries with checksums.
+- [ ] **P18.3** Docs site: quickstart, the engine API, the threat model, the non-goals.
+- [ ] **P18.4** The **blog series** assembled from each phase's writeup (the visibility that promotes).
+- [ ] **P18.5** A **Honeywell design-doc** applying the threat model + isolation to a real internal need.
+- [ ] **P18.6** Example workloads (run untrusted Python, an untrusted binary, a CI job) as demos.
+- [ ] **P18.7** Security policy + responsible-disclosure notes.
+- [ ] **P18.8** v0.1 tag: boots a microVM, runs code, enforces + records it, self-hostable, documented.
+- **Exit gate:** a stranger can `git clone`, self-host the engine, run untrusted code in a microVM,
+  and read the eBPF-observed audit trail — and the blog series tells the whole Linux story.
 
 ---
 
 ## Architectural invariants (never traded away)
-- **Agnostic by ABI, not by host or detector:** a new detector, inference technique, host
-  language, or runtime target is a new artifact or SDK behind the frozen contract — never a
-  special case in the kernel. The ABI is versioned; evolution is additive.
-- **Deterministic by absence:** no clocks, no randomness, no network, no filesystem inside
-  the sandbox — an artifact *cannot* be nondeterministic or exfiltrate, because the imports
-  don't exist. Same input + same artifact = same verdict, on every host, forever.
-- **Detects, never decides:** the kernel returns cited `Verdict`s with lossless spans;
-  policy, redaction, blocking, and routing live in the embedding host / control plane
-  (⟐ operator). No phase adds an action to the kernel.
-- **Measured, not marketed:** every shipped detector carries a CI-generated scorecard from
-  public corpora; a quality regression fails the gate like an API break. No hand-written
-  accuracy claims, ever.
-- **The wire contract is sacred:** `Verdict` JSON (field names, exit codes, status mapping)
-  is golden-tested and evolves additively; CLI, three SDKs, and the sidecar return
-  byte-identical verdicts for identical inputs.
-- **No LLM code, no model keys:** detectors are tiny local models inside artifacts; the
-  kernel never calls a model API. LLM-as-judge is someone else's product.
-- **Mock-first, keyless, offline-testable core:** the mock detector keeps every command and
-  test green on a machine with no secrets, no network, and no registry access.
-- **Twelve-factor config; no secrets anywhere:** flags > env (`AGENT_*`) > file (TOML) >
-  defaults; there is no API key in the detection path by design — a phase that needs one is
-  mis-scoped.
-- **Structured errors, no panics:** a hostile artifact, a fuel exhaustion, a malformed
-  input — every failure is a typed value that degrades to a clear message; `unwrap` /
-  `expect` / `panic!` denied outside tests.
-- **Artifacts are source, builds are reproducible:** detector sources live in-repo; wasm
-  binaries are built by the gate, signed at release, and never hand-committed. Same inputs →
-  same artifact hash.
-- **Detection, not everything:** agent does *not* do policy engines, hosted inference APIs,
-  model training as a service, LLM orchestration, or content moderation adjudication. It
-  detects and cites; the host decides.
+
+1. **Isolation is hardware.** Untrusted code runs in a KVM microVM; the trust boundary is the CPU,
+   not guest-side software.
+2. **Observe & enforce from the host.** Visibility and policy live in host-side eBPF, which the
+   guest cannot see or disable. In-guest agents are for convenience (exec/IO), never for security.
+3. **Engine, not platform.** A self-hostable runtime + a driver API. Multi-tenant auth, billing,
+   fleet scheduling, and dashboards are **out of scope** — the hoster's job. (Tombstone.)
+4. **Measured, not marketed.** Boot/restore/density/overhead are benchmarked with percentiles; no
+   hand-waved performance claims.
+5. **No-panic on the host path.** A hostile or crashing guest, a failed probe, or a broken channel
+   is a typed error, never a host panic, hang, or leak.
+6. **Deny by default.** A sandbox with no explicit policy reaches no network and has minimal
+   capability; every allowance is explicit and recorded.
+7. **Teach as you go.** Every phase produces a writeup; the point is Linux mastery, so the *why*
+   is a first-class deliverable.
+8. **Git is human-driven.** The user makes every commit/branch/push; the coding agent stops at
+   changes made, demo working, box checked in the working tree.
